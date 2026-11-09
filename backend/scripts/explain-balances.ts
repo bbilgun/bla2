@@ -1,10 +1,10 @@
 /**
- * Confirms the balances aggregation uses the {groupId, _id} index instead of scanning every expense.
+ * Checks that the balances aggregation seeks the {groupId, _id} index rather than scanning every expense.
  *
  *   MONGODB_URI='mongodb+srv://...' MONGODB_DB=netzero_dev npm run explain:balances -- <groupId>
  *
- * Look for IXSCAN on groupId_id. COLLSCAN means the index is missing. (Soft-deleted expenses are
- * filtered after the index seek, so they don't change the plan.)
+ * Look for IXSCAN on groupId_id. COLLSCAN means the index is missing. Soft-deleted expenses are filtered
+ * after the index seek, so they don't change the plan.
  */
 import { ObjectId } from 'mongodb';
 import { balancesPipeline } from '../src/aggregations/balances';
@@ -16,12 +16,18 @@ if (!groupId || !ObjectId.isValid(groupId)) {
   process.exit(1);
 }
 
+// Walks the explain output and collects every plan stage name, with the index name where there is one.
 function findStages(node: unknown, out: string[] = []): string[] {
-  if (Array.isArray(node)) node.forEach((n) => findStages(n, out));
-  else if (node && typeof node === 'object') {
+  if (Array.isArray(node)) {
+    for (const child of node) findStages(child, out);
+    return out;
+  }
+  if (node && typeof node === 'object') {
     const obj = node as Record<string, unknown>;
-    if (typeof obj.stage === 'string') out.push(obj.indexName ? `${obj.stage}(${obj.indexName})` : obj.stage);
-    Object.values(obj).forEach((v) => findStages(v, out));
+    if (typeof obj.stage === 'string') {
+      out.push(obj.indexName ? `${obj.stage}(${obj.indexName})` : obj.stage);
+    }
+    for (const child of Object.values(obj)) findStages(child, out);
   }
   return out;
 }

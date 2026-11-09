@@ -1,14 +1,14 @@
-# NetZero API — Serverless Framework v4
+# NetZero API on Serverless Framework v4. docs/backend.md walks through this file section by section.
 #
 #   phone -> API Gateway (HTTP API + Cognito JWT authorizer) -> Lambda (Node 22) -> MongoDB Atlas
 #   phone -> S3 (presigned POST/GET that Lambda signed)       -> receipts bucket
 #
-# Deploy:  npx serverless deploy --stage dev      (see ../README.md for first-time setup)
+# Deploy:  npx serverless deploy --stage dev   First-time setup is in ../README.md.
 # Logs:    npx serverless logs -f api --stage dev --tail
 #
-# NEVER change a UserPool property that forces CloudFormation to *replace* the pool (Schema,
-# UsernameAttributes, AliasAttributes, UserPoolName, ...): a new pool gives every user a new `sub`, and
-# every group, expense and bill is keyed on it. Only change properties AWS documents as
+# Never change a UserPool property that makes CloudFormation replace the pool, such as Schema,
+# UsernameAttributes, AliasAttributes or UserPoolName. A new pool gives every user a new `sub`, and every
+# group, expense and bill is keyed on it. Only change properties AWS documents as
 # "Update requires: No interruption".
 
 org: bilguuna117
@@ -18,15 +18,15 @@ service: netzero
 # every other stage is disposable.
 params:
   prod:
-    # Keep the user pool and the bucket if the stack (or the resource) is ever deleted or replaced.
+    # Keep the user pool and the bucket if the stack or the resource is ever deleted or replaced.
     retainPolicy: Retain
     userPoolDeletionProtection: ACTIVE
-    # scripts/get-token.sh signs in with a plain password (USER_PASSWORD_AUTH); the app uses SRP. Off on prod.
+    # scripts/get-token.sh signs in with a plain password (USER_PASSWORD_AUTH). The app uses SRP. Off on prod.
     allowPasswordAuth: 'false'
-    # Caps concurrent containers: x maxPoolSize 2 = at most 100 Atlas connections, and a ceiling on the bill
-    # during a flood. 0 means "don't reserve": a new account's concurrency quota can be too low to reserve any.
+    # Caps concurrent containers. With maxPoolSize 2 that's at most 100 Atlas connections, and it puts a ceiling
+    # on the AWS bill during a flood. 0 means don't reserve, since a new account's quota may be too low to.
     reservedConcurrency: 50
-    # Set ALARM_EMAIL when deploying to get alarm emails (confirm the subscription email AWS sends).
+    # Set ALARM_EMAIL when deploying to get alarm emails, then confirm the subscription email AWS sends.
     alarmEmail: ${env:ALARM_EMAIL, ''}
   default:
     retainPolicy: Delete
@@ -41,8 +41,8 @@ provider:
   architecture: arm64
   region: ap-northeast-1
   stage: ${opt:stage, 'dev'}
-  # Lambda CPU scales with memory. Cold starts are CPU-bound (loading the bundle, the TLS + SCRAM
-  # handshake to Atlas), so 1024 MB roughly halves them; billed per GB-second, the cost barely moves.
+  # Lambda CPU scales with memory. Cold starts are CPU-bound (loading the bundle, the TLS and SCRAM
+  # handshake to Atlas), so 1024 MB roughly halves them. Billed per GB-second, the cost barely moves.
   memorySize: 1024
   timeout: 10
   logRetentionInDays: 14
@@ -57,8 +57,8 @@ provider:
     # DELETE /me removes the caller's own Cognito user.
     USER_POOL_ID: !Ref UserPool
   logs:
-    # API Gateway access logs, one JSON line per request. routeKey is the route *template*
-    # ("GET /b/{token}"); the raw path is never logged because the bill link token is in it.
+    # API Gateway access logs, one JSON line per request. routeKey is the route template ("GET /b/{token}").
+    # The raw path is never logged because a bill's link token is in it.
     httpApi:
       format: '{"requestId":"$context.requestId","time":"$context.requestTime","routeKey":"$context.routeKey","status":"$context.status","latencyMs":"$context.responseLatency","integrationMs":"$context.integrationLatency","integrationError":"$context.integrationErrorMessage","authorizerError":"$context.authorizer.error","bytes":"$context.responseLength","ip":"$context.identity.sourceIp","userAgent":"$context.identity.userAgent"}'
   httpApi:
@@ -98,19 +98,19 @@ provider:
 build:
   esbuild:
     bundle: true
-    # Not minified, so stack traces in CloudWatch stay readable without source maps.
-    # (--enable-source-maps added ~30% to module load time.)
+    # Not minified, so stack traces in CloudWatch stay readable without source maps, which are off
+    # because --enable-source-maps adds about 30% to module load time.
     minify: false
     sourcemap: false
-    # By default v4 leaves @aws-sdk/* out of the bundle and relies on the Lambda runtime copy.
-    # An explicit (empty) exclude list bundles our pinned SDK, including the presigners.
+    # By default v4 leaves @aws-sdk/* out of the bundle and relies on the Lambda runtime's copy.
+    # An explicit empty exclude list bundles our pinned SDK, presigners included.
     exclude: []
 
 functions:
   # One function serves every route. API Gateway still routes and checks the Cognito JWT per route
-  # (the events below); src/handlers/api.ts picks the handler by routeKey. One function means one
-  # cold start for the whole app instead of one per route, and one MongoDB pool shared by all routes.
-  # Reserved concurrency (prod only) is set in resources.extensions.ApiLambdaFunction below.
+  # (the events below), and src/handlers/api.ts picks the handler by routeKey. One function means one
+  # cold start for the whole app and one MongoDB pool shared by every route.
+  # Reserved concurrency, prod only, is set in resources.extensions.ApiLambdaFunction below.
   api:
     handler: src/handlers/api.handler
     events:
@@ -158,7 +158,7 @@ functions:
 
 resources:
   Conditions:
-    # The params above, as CloudFormation conditions, for the properties that must be *absent* on some stages.
+    # The params above as CloudFormation conditions, for properties that must be absent on some stages.
     AllowPasswordAuth: !Equals ['${param:allowPasswordAuth}', 'true']
     HasReservedConcurrency: !Not [!Equals ['${param:reservedConcurrency}', '0']]
     HasAlarmEmail: !Not [!Equals ['${param:alarmEmail}', '']]
@@ -175,7 +175,7 @@ resources:
         AutoVerifiedAttributes: [email]
         # Refuses DeleteUserPool on prod, even from the console. In-place update.
         DeletionProtection: ${param:userPoolDeletionProtection}
-        # A changed email only takes effect once the new address is verified; until then the token keeps the
+        # A changed email only takes effect once the new address is verified. Until then the token keeps the
         # old, verified one. Group invites are matched against that verified email. In-place update.
         UserAttributeUpdateSettings:
           AttributesRequireVerificationBeforeUpdate: [email]
@@ -190,7 +190,7 @@ resources:
             Mutable: true
             Required: true
         Policies:
-          # Applies to new passwords (sign-up, reset, change); existing ones keep working. In-place update.
+          # Applies to new passwords at sign-up, reset and change. Existing ones keep working. In-place update.
           # The app's sign-up and reset forms check the same rules before sending.
           PasswordPolicy:
             MinimumLength: 10
@@ -207,7 +207,7 @@ resources:
       Properties:
         ClientName: netzero-mobile-${sls:stage}
         UserPoolId: !Ref UserPool
-        GenerateSecret: false # public mobile client: a secret in an app binary isn't secret
+        GenerateSecret: false # a public mobile client, since a secret in an app binary isn't secret
         # The app uses SRP. Plain-password auth (scripts/get-token.sh, smoke.sh) only exists off prod.
         # In-place update.
         ExplicitAuthFlows: !If
@@ -243,7 +243,7 @@ resources:
               Status: Enabled
               AbortIncompleteMultipartUpload: { DaysAfterInitiation: 1 }
 
-    # ---- alarms: a topic, an optional email subscription (ALARM_EMAIL), and three alarms on it.
+    # Alarms: a topic, an optional email subscription (ALARM_EMAIL), and three alarms that notify it.
     AlarmTopic:
       Type: AWS::SNS::Topic
       Properties:
@@ -257,7 +257,7 @@ resources:
         Protocol: email
         Endpoint: ${param:alarmEmail}
 
-    # Every 500 the API returns: crashes the handler caught, timeouts, Lambda errors seen by API Gateway.
+    # Every 5xx the API returns: crashes the handler caught, timeouts, Lambda errors seen by API Gateway.
     ApiServerErrorsAlarm:
       Type: AWS::CloudWatch::Alarm
       Properties:
@@ -276,7 +276,7 @@ resources:
         AlarmActions: [!Ref AlarmTopic]
         OKActions: [!Ref AlarmTopic]
 
-    # Invocations that failed outside our error handling: init crashes (e.g. SSM unreachable), timeouts.
+    # Invocations that failed outside our error handling, such as an init crash (SSM unreachable) or a timeout.
     ApiLambdaErrorsAlarm:
       Type: AWS::CloudWatch::Alarm
       Properties:
@@ -295,7 +295,7 @@ resources:
         AlarmActions: [!Ref AlarmTopic]
         OKActions: [!Ref AlarmTopic]
 
-    # Requests turned away because every allowed container was busy (reserved/account concurrency).
+    # Requests turned away because every allowed container was busy, by reserved or account concurrency.
     ApiLambdaThrottlesAlarm:
       Type: AWS::CloudWatch::Alarm
       Properties:
@@ -315,9 +315,9 @@ resources:
         OKActions: [!Ref AlarmTopic]
 
   extensions:
-    # Throttling at API Gateway, before Lambda or Atlas pay for anything. Rates are requests/second across
-    # all callers. The public guest routes get their own, tighter limits: anyone with a link can hit them.
-    # (/data is polled every 5 s by every open guest page, so it gets the most room of the four.)
+    # Throttling at API Gateway, before Lambda or Atlas pay for anything. Rates are requests per second across
+    # all callers. The public routes get tighter limits of their own, since anyone with a link can call them.
+    # Every open guest page polls /data every 5 seconds, so it gets the most room of the guest routes.
     HttpApiStage:
       Properties:
         DefaultRouteSettings:
@@ -330,14 +330,14 @@ resources:
           'POST /b/{token}/guests': { ThrottlingBurstLimit: 10, ThrottlingRateLimit: 5 }
           'PUT /b/{token}/guests/{guestId}': { ThrottlingBurstLimit: 30, ThrottlingRateLimit: 15 }
       # RouteSettings may only name routes that exist, so on a fresh stack the stage waits for them.
-      # These are Serverless's generated logical ids for the routes above (HttpApiRoute + normalized key).
+      # These are the logical ids Serverless generates for those routes: HttpApiRoute plus the normalized key.
       DependsOn:
         - HttpApiRouteGetHealth
         - HttpApiRouteGetBTokenVar
         - HttpApiRouteGetBTokenVarData
         - HttpApiRoutePostBTokenVarGuests
         - HttpApiRoutePutBTokenVarGuestsGuestidVar
-    # Reserved concurrency only where params.reservedConcurrency isn't 0 (prod); absent elsewhere.
+    # Reserved concurrency only where params.reservedConcurrency isn't 0, which is prod. Absent elsewhere.
     ApiLambdaFunction:
       Properties:
         ReservedConcurrentExecutions: !If [HasReservedConcurrency, '${param:reservedConcurrency}', !Ref AWS::NoValue]

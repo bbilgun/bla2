@@ -1,22 +1,21 @@
+// Derives every member's net balance from the ledger in one aggregation. Balances are never stored,
+// so they can't drift from the history. docs/backend.md walks through the pipeline stage by stage.
 import type { Document, ObjectId } from 'mongodb';
 import { expenses } from '../repositories/collections';
 
+/** A user's net position: positive when the group owes them, negative when they owe the group. */
+export interface NetBalanceRow {
+  userId: string;
+  netCents: number;
+}
+
 /**
- * Balances are derived, never stored. Every read recomputes them from the ledger
- * (expenses + settlements), so they can't drift out of sync with the history.
- *
- * Read the pipeline as array ops running inside Mongo:
- *
- *   expenses.filter(e => e.groupId === g && !e.deletedAt)                    $match
- *     .flatMap(e => [{user: e.paidBy, +amount}, ...e.splits.map(-share)])     $project + $unwind
- *     .concat(settlements.filter(...).flatMap(s => [{from, +amt}, {to, -amt}]))  $unionWith
- *     .groupBy(entry => entry.userId).map(sum)                               $group
- *
- * Positive net: the group owes you. Negative: you owe the group. All nets sum to 0.
+ * The pipeline, run on `expenses`. Each live expense credits its payer and debits each share; each live
+ * settlement credits the payer and debits the receiver. Summed per user, the nets add up to zero.
  */
 export function balancesPipeline(groupId: ObjectId): Document[] {
   return [
-    // Soft-deleted expenses and settlements never count. The {groupId, _id} index still drives the match.
+    // The {groupId, _id} index drives this match.
     { $match: { groupId, deletedAt: { $exists: false } } },
     {
       $project: {
@@ -63,6 +62,8 @@ export function balancesPipeline(groupId: ObjectId): Document[] {
   ];
 }
 
-export async function computeBalances(groupId: ObjectId): Promise<{ userId: string; netCents: number }[]> {
-  return (await expenses()).aggregate<{ userId: string; netCents: number }>(balancesPipeline(groupId)).toArray();
+/** Net balances for everyone with any entry in the group's ledger, sorted by user id. */
+export async function computeBalances(groupId: ObjectId): Promise<NetBalanceRow[]> {
+  const col = await expenses();
+  return col.aggregate<NetBalanceRow>(balancesPipeline(groupId)).toArray();
 }

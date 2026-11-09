@@ -1,3 +1,6 @@
+// The race the items guard in repositories/bills.ts exists for: a guest's request has read the bill,
+// the host changes it, then the guest's write lands. The host's change runs inside the mocked repository
+// call, right before the guest's write.
 import { randomBytes, randomUUID } from 'node:crypto';
 import { ObjectId } from 'mongodb';
 import { describe, expect, it, vi } from 'vitest';
@@ -7,11 +10,6 @@ import * as billsRepo from '../../src/repositories/bills';
 import { getDb } from '../../src/repositories/db';
 import { call, useFakeAwsEnv, useTestDb } from './helpers';
 
-/**
- * The race the guard in repositories/bills.ts exists for: a guest's server request has read the bill,
- * then the host deletes a line, then the guest's write lands. Simulated by running the host's edit
- * inside the repository call, right before the guest's write.
- */
 const hooks = vi.hoisted(() => ({ beforeGuestWrite: [] as (() => Promise<void>)[] }));
 
 vi.mock('../../src/repositories/bills', async (importOriginal) => {
@@ -60,13 +58,14 @@ async function setup() {
   return { bill, guest, ids, tick, hostKeepsOnly };
 }
 
-describe('host removes a line between a guest read and write', () => {
-  it('the guest write retries with the fresh lines: 200, no dangling tick, not stuck', async () => {
+describe('a host change between a guest read and write', () => {
+  it('retries the guest write against the fresh lines', async () => {
     const { bill, guest, ids, tick, hostKeepsOnly } = await setup();
     vi.mocked(billsRepo.updateGuestBySecret).mockClear();
     hooks.beforeGuestWrite.push(hostKeepsOnly('Хуушуур'));
 
     const res = await tick({ itemIds: [ids['Хуушуур'], ids['Кола']], paid: true });
+
     expect(res.status).toBe(200);
     const me = res.body.guests.find((g: { id: string }) => g.id === guest.guestId);
     // Ticks and the paid amount were both recomputed against the bill as it is now.
@@ -76,28 +75,32 @@ describe('host removes a line between a guest read and write', () => {
     const doc = await (await getDb()).collection('bills').findOne({ _id: new ObjectId(bill.id) });
     expect(doc!.guests.find((g: { id: string }) => g.id === guest.guestId).itemIds).toEqual([ids['Хуушуур']]);
 
-    // And the next tick from the same (stale) page just works.
+    // The next tick from the same stale page just works.
     const next = await tick({ itemIds: [ids['Кола']] });
     expect(next.status).toBe(200);
     expect(next.body.guests.find((g: { id: string }) => g.id === guest.guestId).itemIds).toEqual([]);
   });
 
-  it('if the bill is closed in between, the guest gets BILL_CLOSED, not a silent miss', async () => {
+  it('returns BILL_CLOSED when the bill closes in between', async () => {
     const { bill, ids, tick } = await setup();
     hooks.beforeGuestWrite.push(async () => {
       await call(bills.setStatus, { method: 'POST', params: { billId: bill.id }, body: { status: 'CLOSED' } });
     });
+
     const res = await tick({ itemIds: [ids['Кола']] });
+
     expect(res.status).toBe(409);
     expect(res.body.error.code).toBe('BILL_CLOSED');
   });
 
-  it('if the guest is removed in between, it is GUEST_NOT_FOUND', async () => {
+  it('returns GUEST_NOT_FOUND when the guest is removed in between', async () => {
     const { bill, guest, ids, tick } = await setup();
     hooks.beforeGuestWrite.push(async () => {
       await call(bills.removeGuest, { method: 'DELETE', params: { billId: bill.id, guestId: guest.guestId } });
     });
+
     const res = await tick({ itemIds: [ids['Кола']] });
+
     expect(res.status).toBe(404);
     expect(res.body.error.code).toBe('GUEST_NOT_FOUND');
   });

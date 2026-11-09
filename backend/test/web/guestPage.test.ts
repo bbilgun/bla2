@@ -1,3 +1,6 @@
+// Runs the real guest page script in jsdom against the real API. Every fetch the page makes becomes an
+// API Gateway event for the real router (src/handlers/api.ts) and its MongoDB, and the tests click through
+// like a guest would. The host's side goes through the real host handlers.
 import { randomUUID } from 'node:crypto';
 import { JSDOM } from 'jsdom';
 import { ObjectId } from 'mongodb';
@@ -6,12 +9,6 @@ import { handler as api } from '../../src/handlers/api';
 import * as bills from '../../src/handlers/bills';
 import { getDb } from '../../src/repositories/db';
 import { call, useFakeAwsEnv, useTestDb, type TestUser } from '../integration/helpers';
-
-/**
- * Runs the real guest page script in a DOM, against the real API: every fetch the page makes becomes an
- * API Gateway event for the real Lambda router (src/handlers/api.ts) and its MongoDB. Then it clicks
- * through like a guest would. The host's side is driven through the real host handlers.
- */
 
 useTestDb();
 useFakeAwsEnv();
@@ -46,7 +43,7 @@ async function createBill(
   });
   expect(res.status).toBe(201);
   const bill = res.body as Bill;
-  const [i1, i2] = bill.items.map((i) => i.id) as [string, string];
+  const [i1, i2] = bill.items.map((item) => item.id) as [string, string];
   // The host had the first line.
   await hostCall(bills.updateGuest, 'PUT', { billId: bill.id, guestId: 'host' }, { itemIds: [i1] });
   return { ...bill, i1, i2 };
@@ -63,7 +60,7 @@ interface Sent {
   secret: string | undefined;
 }
 
-/** The page's `fetch`: relative URL -> route template + params -> the real Lambda handler. */
+// The page's `fetch`. It turns a relative URL into a route template and params and calls the real router.
 function realApi(token: string) {
   const requests: Sent[] = [];
   const pending = new Set<Promise<unknown>>();
@@ -91,9 +88,10 @@ function realApi(token: string) {
 type Api = ReturnType<typeof realApi>;
 let dom: JSDOM | undefined;
 let current: Api | undefined;
-afterEach(() => dom?.window.close()); // stops the page's polling timer
+// Closing the window stops the page's polling timer.
+afterEach(() => dom?.window.close());
 
-/** Lets the page's requests reach Mongo and come back, and its callbacks render. */
+// Lets the page's requests reach Mongo and come back, and its callbacks render.
 async function settle() {
   for (let i = 0; i < 200; i++) {
     await new Promise((r) => setTimeout(r, 0));
@@ -140,24 +138,29 @@ async function guestOnServer(billId: string, name: string) {
   return bill.guests.find((g: { name: string }) => g.name === name);
 }
 
-describe('guest page against the real API', () => {
-  it('a new visitor sees the bill, who shares what, and a name box; items are locked until they join', async () => {
+describe('the guest page against the real API', () => {
+  it('shows a new visitor the bill and a name box, with lines locked until they join', async () => {
     const bill = await createBill();
+
     const doc = await open(bill.token);
+
     const text = doc.body.textContent!;
     expect(text).toContain('Оройн хоол');
     expect(text).toContain('34,500₮');
     expect(text).toContain('30,000₮');
-    expect(text).toContain('Хэн ч сонгоогүй'); // the cola
+    // Nobody has ticked the cola.
+    expect(text).toContain('Хэн ч сонгоогүй');
     expect(doc.querySelector('#name')).not.toBeNull();
     expect(boxes(doc).every((b) => b.disabled)).toBe(true);
     expect(doc.querySelector('#pay')).toBeNull();
   });
 
-  it('KRW and JPY amounts are whole won/yen: no division by 100, no decimals', async () => {
-    // 3,000,000 won and 450,000 won, stored as-is (the smallest unit of KRW is 1 won).
+  it('shows KRW amounts as whole won', async () => {
+    // 3,000,000 won and 450,000 won, stored as-is because KRW has no minor unit.
     const bill = await createBill({ currency: 'KRW' });
+
     const doc = await open(bill.token);
+
     const text = doc.body.textContent!;
     expect(text).toContain('₩3,450,000');
     expect(text).toContain('₩3,000,000');
@@ -165,7 +168,7 @@ describe('guest page against the real API', () => {
     expect(text).not.toMatch(/₩[\d,]+\.\d/);
   });
 
-  it('join, tick a shared line, see my share and how to pay, mark paid with the amount I saw', async () => {
+  it('joins, ticks a shared line and marks paid with the amount shown', async () => {
     const bill = await createBill();
     const doc = await open(bill.token);
     await joinAs(doc, 'Бат');
@@ -178,7 +181,8 @@ describe('guest page against the real API', () => {
     expect(JSON.parse(dom!.window.localStorage.getItem(storeKey(bill.token))!).guestId).toBe(sent.guestId);
     expect(boxes(doc).every((b) => !b.disabled)).toBe(true);
 
-    boxes(doc)[0]!.click(); // khuushuur, which the host also had
+    // The khuushuur, which the host also had.
+    boxes(doc)[0]!.click();
     await settle();
     const put = current!.requests.find((r) => r.method === 'PUT')!;
     expect(put.path).toBe(`/guests/${sent.guestId}`);
@@ -186,10 +190,12 @@ describe('guest page against the real API', () => {
     expect(put.secret).toBe(sent.secret);
 
     const pay = doc.querySelector('#pay')!.textContent!;
-    expect(pay).toContain('15,000₮'); // half of 30,000
+    // Half of 30,000.
+    expect(pay).toContain('15,000₮');
     expect(pay).toContain('Хаан банк');
     expect(pay).toContain('5000 1234 56');
-    expect(pay).toContain(`${bill.code} Бат`); // transfer note
+    // The transfer note.
+    expect(pay).toContain(`${bill.code} Бат`);
     expect(doc.body.textContent).toContain('Таны хэсэг: 15,000₮');
 
     buttons(doc, 'Би төлсөн')[0]!.click();
@@ -199,23 +205,26 @@ describe('guest page against the real API', () => {
     expect(doc.querySelector('#pay')!.textContent).toContain('Төлсөн гэж тэмдэглэсэн');
   });
 
-  it('after paying, ticking more shows what is still due; unticking shows what was overpaid', async () => {
+  it('shows what is still due or overpaid when ticks change after paying', async () => {
     const bill = await createBill();
     const doc = await open(bill.token);
     await joinAs(doc, 'Сараа');
-    boxes(doc)[1]!.click(); // cola, 4,500₮
+    // The cola, 4,500₮.
+    boxes(doc)[1]!.click();
     await settle();
     buttons(doc, 'Би төлсөн')[0]!.click();
     await settle();
 
-    boxes(doc)[0]!.click(); // + half the khuushuur: 15,000₮ more
+    // Plus half the khuushuur, 15,000₮ more.
+    boxes(doc)[0]!.click();
     await settle();
     const due = doc.querySelector('#pay')!;
     expect(due.querySelector('h2')!.textContent).toBe('Үлдэгдэл төлөх');
     expect(due.querySelector('.big')!.textContent).toBe('15,000₮');
     expect(doc.querySelector('#due')!.textContent).toContain('4,500₮ төлсөн');
     expect(doc.querySelector('#bar')!.textContent).toContain('Үлдэгдэл');
-    expect(doc.body.textContent).toContain('Дутуу'); // badge in the people list
+    // The badge in the people list.
+    expect(doc.body.textContent).toContain('Дутуу');
 
     // Paying the rest sends the new total the guest sees now.
     buttons(doc, 'Би төлсөн')[0]!.click();
@@ -223,7 +232,7 @@ describe('guest page against the real API', () => {
     expect(current!.requests.at(-1)!.body).toEqual({ paid: true, paidCents: 1_950_000 });
     expect(await guestOnServer(bill.id, 'Сараа')).toMatchObject({ paid: true, dueCents: 0 });
 
-    // Unticking the khuushuur: 15,000₮ too much.
+    // Unticking the khuushuur means 15,000₮ too much.
     boxes(doc)[0]!.click();
     await settle();
     expect(doc.querySelector('#over')!.textContent).toBe('Та 15,000₮ илүү төлсөн байна. Билгүүн-тэй тохиролцоно уу.');
@@ -243,11 +252,11 @@ describe('guest page against the real API', () => {
     expect(current!.requests.filter((r) => r.method === 'POST')).toHaveLength(0);
   });
 
-  it('a line the host deleted while the page was open: ticking it does not get the guest stuck', async () => {
+  it('recovers when the guest ticks a line the host has deleted', async () => {
     const bill = await createBill();
     const doc = await open(bill.token);
     await joinAs(doc, 'Бат');
-    // The host deletes the cola; this page still shows it.
+    // The host deletes the cola, which this page still shows.
     await hostCall(bills.update, 'PUT', { billId: bill.id }, {
       title: 'Оройн хоол',
       items: [{ id: bill.i1, name: 'Хуушуур', priceCents: 3_000_000 }],
@@ -256,38 +265,47 @@ describe('guest page against the real API', () => {
     boxes(doc)[1]!.click();
     await settle();
     expect(doc.querySelector('.error')).toBeNull();
-    expect(boxes(doc)).toHaveLength(1); // the page now shows the bill as it is
+    // The page now shows the bill as it is.
+    expect(boxes(doc)).toHaveLength(1);
     boxes(doc)[0]!.click();
     await settle();
     expect((await guestOnServer(bill.id, 'Бат')).itemIds).toEqual([bill.i1]);
   });
 
-  it('names and items typed by people are shown as text, never as HTML', async () => {
+  it('shows typed names and lines as text, never as markup', async () => {
     const bill = await createBill({ itemName: '<img src=x onerror=alert(1)>' });
+
     const doc = await open(bill.token);
+
     expect(doc.querySelector('img')).toBeNull();
     expect(doc.body.textContent).toContain('<img src=x onerror=alert(1)>');
   });
 
-  it('a closed bill: a banner, and no way to join', async () => {
+  it('shows a banner and no name box on a closed bill', async () => {
     const bill = await createBill();
     await hostCall(bills.setStatus, 'POST', { billId: bill.id }, { status: 'CLOSED' });
+
     const doc = await open(bill.token);
+
     expect(doc.body.textContent).toContain('Тооцоо хаагдсан');
     expect(doc.querySelector('#name')).toBeNull();
   });
 
-  it('closed between loading and joining: BILL_CLOSED in Mongolian', async () => {
+  it('explains in Mongolian when the bill closed before the guest joined', async () => {
     const bill = await createBill();
     const doc = await open(bill.token);
     await hostCall(bills.setStatus, 'POST', { billId: bill.id }, { status: 'CLOSED' });
+
     await joinAs(doc, 'Бат');
+
     expect(doc.querySelector('.error')!.textContent).toBe('Тооцоо хаагдсан тул сонголтоо өөрчлөх боломжгүй.');
   });
 
-  it('a name someone already has (here the host, in another case): NAME_TAKEN in Mongolian', async () => {
+  it('explains in Mongolian when the name is taken', async () => {
     const bill = await createBill();
     const doc = await open(bill.token);
+
+    // The host's name, in another case.
     await joinAs(doc, ' билгүүн ');
     expect(doc.querySelector('.error')!.textContent).toContain('Энэ нэртэй хүн аль хэдийн нэгдсэн байна');
     expect(doc.querySelector('#name')).not.toBeNull();
@@ -296,7 +314,7 @@ describe('guest page against the real API', () => {
     expect(doc.querySelector('#name')).toBeNull();
   });
 
-  it('removed by the host: the page says so (on the next load, and if it retries the old id)', async () => {
+  it('tells a removed guest on the next load and when they retry the old id', async () => {
     const bill = await createBill();
     let doc = await open(bill.token);
     await joinAs(doc, 'Бат');
@@ -307,7 +325,7 @@ describe('guest page against the real API', () => {
     expect(doc.querySelector('.error')!.textContent).toBe('Төлөгч таныг энэ тооцооноос хассан байна.');
     expect(doc.querySelector('#name')).not.toBeNull();
 
-    // A browser that never saw its join confirmed retries with the same id: the server refuses it.
+    // A browser that never saw its join confirmed retries with the same id, and the server refuses it.
     const unconfirmed = { guestId: saved.guestId, secret: saved.secret, name: 'Бат' };
     doc = await open(bill.token, { [storeKey(bill.token)]: JSON.stringify(unconfirmed) });
     expect((doc.querySelector('#name') as HTMLInputElement).value).toBe('Бат');
@@ -317,20 +335,24 @@ describe('guest page against the real API', () => {
     expect(doc.querySelector('.error')!.textContent).toBe('Төлөгч таныг энэ тооцооноос хассан байна.');
   });
 
-  it('an expired link says so in Mongolian', async () => {
+  it('explains an expired link in Mongolian', async () => {
     const bill = await createBill();
     await (await getDb())
       .collection('bills')
       .updateOne({ _id: new ObjectId(bill.id) }, { $set: { createdAt: new Date(Date.now() - 91 * 86_400_000) } });
+
     const doc = await open(bill.token);
+
     expect(doc.body.textContent).toContain('Энэ тооцооны холбоосын хугацаа дууссан байна.');
     expect(doc.querySelector('#name')).toBeNull();
   });
 
-  it('an unknown link (or one the host replaced) says so in Mongolian', async () => {
+  it('explains in Mongolian a link the host has replaced', async () => {
     const bill = await createBill();
     await hostCall(bills.rotateToken, 'POST', { billId: bill.id });
+
     const doc = await open(bill.token);
+
     expect(doc.body.textContent).toContain('Тооцоо олдсонгүй');
     expect(current!.requests).toHaveLength(1);
   });

@@ -1,3 +1,5 @@
+// The single Lambda behind the whole API. API Gateway matches the route and checks the Cognito JWT,
+// then this file picks the handler by the event's routeKey, such as "GET /groups/{groupId}".
 import type { APIGatewayProxyEventV2, APIGatewayProxyStructuredResultV2, Context } from 'aws-lambda';
 import { json } from '../lib/http';
 import * as balances from './balances';
@@ -13,20 +15,15 @@ import * as settlements from './settlements';
 type RouteHandler = (event: never, context: Context) => Promise<APIGatewayProxyStructuredResultV2>;
 
 /**
- * The single Lambda behind the whole API.
- *
- * API Gateway does the real routing and the Cognito JWT check per route (serverless.yml); by the time
- * an event gets here it carries the matched routeKey, e.g. "GET /groups/{groupId}". This table maps
- * that to the route's handler, which still does all its own parsing and error handling.
- *
- * Why one function: with one function per route, every route had its own cold start (~1 s each) and its
- * own MongoDB connection pool, so a fresh session paid that second again on every screen.
- * test/integration/router.test.ts checks this table against serverless.yml.
+ * Every route the function serves, by route key. It must list exactly the httpApi events in
+ * serverless.yml; test/integration/router.test.ts checks that.
  */
 export const routes: Record<string, RouteHandler> = {
   'GET /health': health.handler,
   'GET /me': me.handler,
   'DELETE /me': me.remove,
+  'POST /me/pay-qr-url': me.payQrUploadUrl,
+  'PUT /me/pay-qr': me.confirmPayQr,
   'POST /groups': groups.create,
   'GET /groups': groups.list,
   'GET /groups/{groupId}': groups.get,
@@ -43,13 +40,13 @@ export const routes: Record<string, RouteHandler> = {
   'GET /groups/{groupId}/expenses': expenses.list,
   'PUT /groups/{groupId}/expenses/{expenseId}': expenses.update,
   'DELETE /groups/{groupId}/expenses/{expenseId}': expenses.remove,
+  'POST /groups/{groupId}/expenses/{expenseId}/receipt-url': receipts.uploadUrl,
+  'GET /groups/{groupId}/expenses/{expenseId}/receipt-url': receipts.viewUrl,
+  'PUT /groups/{groupId}/expenses/{expenseId}/receipt': receipts.confirm,
   'POST /groups/{groupId}/settlements': settlements.create,
   'GET /groups/{groupId}/settlements': settlements.list,
   'DELETE /groups/{groupId}/settlements/{settlementId}': settlements.remove,
   'GET /groups/{groupId}/balances': balances.handler,
-  'POST /groups/{groupId}/expenses/{expenseId}/receipt-url': receipts.uploadUrl,
-  'GET /groups/{groupId}/expenses/{expenseId}/receipt-url': receipts.viewUrl,
-  'PUT /groups/{groupId}/expenses/{expenseId}/receipt': receipts.confirm,
   'POST /bills': bills.create,
   'GET /bills': bills.list,
   'GET /bills/{billId}': bills.get,
@@ -59,16 +56,17 @@ export const routes: Record<string, RouteHandler> = {
   'POST /bills/{billId}/status': bills.setStatus,
   'PUT /bills/{billId}/guests/{guestId}': bills.updateGuest,
   'DELETE /bills/{billId}/guests/{guestId}': bills.removeGuest,
-  'POST /me/pay-qr-url': bills.payQrUploadUrl,
-  'PUT /me/pay-qr': bills.confirmPayQr,
   'GET /b/{token}': billPage.page,
   'GET /b/{token}/data': billPage.data,
   'POST /b/{token}/guests': billPage.join,
   'PUT /b/{token}/guests/{guestId}': billPage.updateGuest,
 };
 
+/** The Lambda entry point (`functions.api.handler` in serverless.yml). An unknown route key is a 404. */
 export async function handler(event: APIGatewayProxyEventV2, context: Context): Promise<APIGatewayProxyStructuredResultV2> {
   const route = routes[event.routeKey];
-  if (!route) return json(404, { error: { code: 'ROUTE_NOT_FOUND', message: `No route for ${event.routeKey}` } });
+  if (!route) {
+    return json(404, { error: { code: 'ROUTE_NOT_FOUND', message: `No route for ${event.routeKey}` } });
+  }
   return route(event as never, context);
 }

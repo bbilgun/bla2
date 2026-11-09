@@ -1,30 +1,41 @@
+// The balances screen: each person's net position in a group and a suggested way to settle up.
 import { computeBalances } from '../aggregations/balances';
 import { cents } from '../domain/money';
-import { suggestTransfers, type Balance } from '../domain/settle';
 import { compareIds } from '../domain/split';
-import type { Caller } from '../lib/http';
+import { suggestTransfers } from '../domain/settle';
+import type { AuthedRequest, Response } from '../lib/http';
 import { requireMembership } from './groups';
 
-export async function getBalances(caller: Caller, groupId: string) {
-  const group = await requireMembership(groupId, caller);
+/**
+ * Every member's balance, derived from the ledger on this read, plus suggested payments. Former members
+ * appear only while their balance isn't zero, which leaving normally prevents.
+ */
+export async function getBalances(req: AuthedRequest, groupId: string): Promise<Response> {
+  const group = await requireMembership(groupId, req.caller);
   const rows = await computeBalances(group._id);
-  const net = new Map(rows.map((r) => [r.userId, r.netCents]));
+  const netByUser = new Map(rows.map((row) => [row.userId, row.netCents]));
 
-  // Every member appears, even with no activity yet. Former members appear only while non-zero
-  // (leaving is blocked until then, so that's only legacy data or a race).
-  const ids = new Set([...group.members.map((m) => m.userId), ...[...net].filter(([, n]) => n !== 0).map(([id]) => id)]);
-  const names = new Map(group.members.map((m) => [m.userId, m.name]));
-  const balances: (Balance & { name: string })[] = [...ids].sort(compareIds).map((userId) => ({
+  // Every member is listed, even with no activity yet.
+  const userIds = new Set(group.members.map((member) => member.userId));
+  for (const [userId, net] of netByUser) {
+    if (net !== 0) userIds.add(userId);
+  }
+
+  const names = new Map(group.members.map((member) => [member.userId, member.name]));
+  const balances = [...userIds].sort(compareIds).map((userId) => ({
     userId,
     name: names.get(userId) ?? 'Former member',
-    netCents: cents(net.get(userId) ?? 0),
+    netCents: cents(netByUser.get(userId) ?? 0),
   }));
 
   return {
-    groupId: group._id.toHexString(),
-    currency: group.currency,
-    balances,
-    // suggestTransfers also asserts the balances sum to exactly 0.
-    transfers: suggestTransfers(balances),
+    status: 200,
+    body: {
+      groupId: group._id.toHexString(),
+      currency: group.currency,
+      balances,
+      // This also checks that the balances add up to exactly zero.
+      transfers: suggestTransfers(balances),
+    },
   };
 }

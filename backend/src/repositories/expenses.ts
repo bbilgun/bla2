@@ -1,48 +1,41 @@
+// The expenses collection. Expenses are soft-deleted, and edits are compare-and-set on `version`.
 import type { ObjectId } from 'mongodb';
-import {
-  expenses,
-  insertOnce,
-  NOT_DELETED,
-  pageNewestFirst,
-  type ExpenseContent,
-  type ExpenseDoc,
-  type ExpenseVersionDoc,
-  type Page,
-} from './collections';
+import { expenses, insertOnce, NOT_DELETED, pageNewestFirst, type Page, type PageOptions } from './collections';
+import type { ExpenseContent, ExpenseDoc, ExpenseVersionDoc } from './documents';
 
 /** How many replaced versions an expense keeps. Older ones fall off. */
 export const MAX_EXPENSE_HISTORY = 20;
 
-/** Insert-or-fetch on the idempotency key's resourceId (see services/idempotency.ts). */
+/** Insert-or-fetch on the _id the idempotency key reserved (see services/idempotency.ts). */
 export async function insertExpenseOnce(doc: ExpenseDoc): Promise<ExpenseDoc> {
   return insertOnce(await expenses(), doc);
 }
 
-/** Live expenses only, newest first. */
-export async function listExpenses(
-  groupId: ObjectId,
-  opts: { limit: number; cursor?: ObjectId | undefined },
-): Promise<Page<ExpenseDoc>> {
-  return pageNewestFirst(await expenses(), { groupId, ...NOT_DELETED }, opts);
+/** One page of the group's live expenses, newest first. */
+export async function listExpenses(groupId: ObjectId, page: PageOptions): Promise<Page<ExpenseDoc>> {
+  return pageNewestFirst(await expenses(), { groupId, ...NOT_DELETED }, page);
 }
 
-/** A live expense. Deleted ones look missing everywhere (edit, receipts). */
+/** A live expense in the group, or null. A deleted expense looks missing everywhere. */
 export async function findExpense(groupId: ObjectId, expenseId: ObjectId): Promise<ExpenseDoc | null> {
   return (await expenses()).findOne({ _id: expenseId, groupId, ...NOT_DELETED });
 }
 
-/** Deleted or not: DELETE uses it to answer a repeated delete with 200. */
+/** An expense in the group, deleted or not. DELETE uses it to answer a repeated delete with 200. */
 export async function findExpenseAnyState(groupId: ObjectId, expenseId: ObjectId): Promise<ExpenseDoc | null> {
   return (await expenses()).findOne({ _id: expenseId, groupId });
 }
 
-/** Expenses created before versioning have no `version` field: they are version 1. */
-const atVersion = (version: number) =>
-  version === 1 ? { $or: [{ version: 1 }, { version: { $exists: false } }] } : { version };
+// Expenses without a `version` field are version 1.
+function atVersion(version: number) {
+  if (version === 1) return { $or: [{ version: 1 }, { version: { $exists: false } }] };
+  return { version };
+}
 
 /**
- * Compare-and-set: writes only if the stored version is still `expectedVersion`. Every edit bumps the
- * version, so a match also means the stored content is exactly `previous` (which goes into history).
+ * Replaces the content only if the stored version is still `expectedVersion`, and bumps it. Every edit
+ * bumps the version, so a match also means the stored content is exactly `previous`, which goes into
+ * the history. Null when someone else got there first or the expense was deleted.
  */
 export async function updateExpenseIfVersion(
   groupId: ObjectId,
@@ -66,6 +59,7 @@ export async function updateExpenseIfVersion(
   );
 }
 
+/** Marks a live expense deleted. Does nothing if it already is. */
 export async function softDeleteExpense(groupId: ObjectId, expenseId: ObjectId, userId: string): Promise<void> {
   await (await expenses()).updateOne(
     { _id: expenseId, groupId, ...NOT_DELETED },
@@ -73,7 +67,7 @@ export async function softDeleteExpense(groupId: ObjectId, expenseId: ObjectId, 
   );
 }
 
-/** Saves a confirmed receipt key on a live expense. Returns the expense before the change (null if gone). */
+/** Saves a confirmed receipt key on a live expense. Returns the expense as it was before, or null if it's gone. */
 export async function setReceiptKey(groupId: ObjectId, expenseId: ObjectId, key: string): Promise<ExpenseDoc | null> {
   return (await expenses()).findOneAndUpdate(
     { _id: expenseId, groupId, ...NOT_DELETED },

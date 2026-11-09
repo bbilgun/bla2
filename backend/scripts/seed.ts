@@ -1,17 +1,17 @@
 /**
- * Seeds a demo group straight into MongoDB.
+ * Seeds a demo group straight into MongoDB, for trying the app with a long expense list.
  *
  *   MONGODB_URI='mongodb+srv://...' MONGODB_DB=netzero_dev npm run seed -- you@example.com 1000
  *
- * The email must belong to someone who has signed in to the app at least once (GET /me creates the user row).
- * Adds two demo members and N random expenses, all split by the same domain code the API uses.
- * (The API never looks users up by email; this dev script does, straight from the collection.)
+ * The email must belong to someone who has signed in to the app once, since GET /me creates the user row.
+ * Adds two demo members and N random expenses, split by the same domain code the API uses. The API never
+ * looks users up by email, so this script reads the collection directly.
  */
 import { ObjectId } from 'mongodb';
 import { cents } from '../src/domain/money';
 import { computeSplit, type SplitInput } from '../src/domain/split';
 import { closeDb, getDb } from '../src/repositories/db';
-import type { ExpenseDoc, GroupDoc, UserDoc } from '../src/repositories/collections';
+import type { ExpenseDoc, GroupDoc, UserDoc } from '../src/repositories/documents';
 import { upsertUser } from '../src/repositories/users';
 
 const [email, countArg = '50'] = process.argv.slice(2);
@@ -24,7 +24,8 @@ const DESCRIPTIONS = ['Groceries', 'Dinner', 'Taxi', 'Coffee', 'Rent', 'Electric
 
 async function main() {
   const db = await getDb();
-  const me = await db.collection<UserDoc>('users').findOne({ email: email!.toLowerCase() }, { sort: { updatedAt: -1 } });
+  const users = db.collection<UserDoc>('users');
+  const me = await users.findOne({ email: email!.toLowerCase() }, { sort: { updatedAt: -1 } });
   if (!me) throw new Error(`No user ${email}. Sign in to the app once (it calls GET /me), then re-run.`);
 
   const demo = await Promise.all([
@@ -55,10 +56,12 @@ async function main() {
   for (let i = 0; i < count; i++) {
     const amount = cents(100 + Math.floor(Math.random() * 20_000));
     const paidBy = ids[i % ids.length]!;
-    const split: SplitInput =
-      i % 3 === 0
-        ? { type: 'PERCENT', shares: ids.map((userId, j) => ({ userId, basisPoints: [5000, 2500, 2500][j]! })) }
-        : { type: 'EVEN', userIds: ids };
+    // Every third expense is 50/25/25, the rest are even.
+    let split: SplitInput = { type: 'EVEN', userIds: ids };
+    if (i % 3 === 0) {
+      const basisPoints = [5000, 2500, 2500];
+      split = { type: 'PERCENT', shares: ids.map((userId, j) => ({ userId, basisPoints: basisPoints[j]! })) };
+    }
     docs.push({
       _id: new ObjectId(),
       groupId: group._id,

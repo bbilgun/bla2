@@ -2,33 +2,37 @@ import { describe, expect, it } from 'vitest';
 import { cents } from '../../src/domain/money';
 import { suggestTransfers } from '../../src/domain/settle';
 
-const b = (userId: string, net: number) => ({ userId, netCents: cents(net) });
+const balance = (userId: string, net: number) => ({ userId, netCents: cents(net) });
 
 describe('suggestTransfers', () => {
   it('pays creditors from debtors, biggest first', () => {
-    expect(suggestTransfers([b('alice', 6000), b('bob', -3000), b('carol', -3000)])).toEqual([
+    const transfers = suggestTransfers([balance('alice', 6000), balance('bob', -3000), balance('carol', -3000)]);
+
+    expect(transfers).toEqual([
       { fromUserId: 'bob', toUserId: 'alice', amountCents: 3000 },
       { fromUserId: 'carol', toUserId: 'alice', amountCents: 3000 },
     ]);
   });
 
   it('needs no transfers when everyone is even', () => {
-    expect(suggestTransfers([b('a', 0), b('b', 0)])).toEqual([]);
+    expect(suggestTransfers([balance('a', 0), balance('b', 0)])).toEqual([]);
   });
 
   it('settles everyone to exactly zero with at most n - 1 transfers', () => {
-    const balances = [b('a', 1234), b('b', -999), b('c', 500), b('d', -735), b('e', 0)];
+    const balances = [balance('a', 1234), balance('b', -999), balance('c', 500), balance('d', -735), balance('e', 0)];
+
     const transfers = suggestTransfers(balances);
+
     expect(transfers.length).toBeLessThanOrEqual(balances.length - 1);
-    const after = new Map(balances.map((x) => [x.userId, x.netCents as number]));
-    for (const t of transfers) {
-      after.set(t.fromUserId, after.get(t.fromUserId)! + t.amountCents);
-      after.set(t.toUserId, after.get(t.toUserId)! - t.amountCents);
+    const after = new Map(balances.map((b) => [b.userId, b.netCents as number]));
+    for (const transfer of transfers) {
+      after.set(transfer.fromUserId, after.get(transfer.fromUserId)! + transfer.amountCents);
+      after.set(transfer.toUserId, after.get(transfer.toUserId)! - transfer.amountCents);
     }
-    expect([...after.values()].every((v) => v === 0)).toBe(true);
+    expect([...after.values()].every((net) => net === 0)).toBe(true);
   });
 
   it('refuses balances that do not sum to zero', () => {
-    expect(() => suggestTransfers([b('a', 1)])).toThrow(/sum to 1/);
+    expect(() => suggestTransfers([balance('a', 1)])).toThrow(/sum to 1/);
   });
 });

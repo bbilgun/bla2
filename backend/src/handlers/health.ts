@@ -1,10 +1,13 @@
+// The public health check. It pings MongoDB through the cached client, so a 200 also proves the
+// function can reach Atlas.
 import { withPublicHandler } from '../lib/http';
 import { getDb } from '../repositories/db';
 
-/** GET /health — public. Pings Atlas through the cached client, so it also proves network access works. */
+/** GET /health: no token needed. Reports how long the ping took and which stage answered. */
 export const handler = withPublicHandler(async () => {
   const started = Date.now();
   const db = await getDb();
   await db.command({ ping: 1 });
-  return { status: 200, body: { ok: true, mongoMs: Date.now() - started, stage: process.env.STAGE ?? 'local' } };
+  const mongoMs = Date.now() - started;
+  return { status: 200, body: { ok: true, mongoMs, stage: process.env.STAGE ?? 'local' } };
 });

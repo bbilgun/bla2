@@ -1,4 +1,6 @@
-import { randomUUID } from 'node:crypto';
+// Expenses, idempotency, settlements, balances and paging: everything that moves money in a group.
+import { createHash, randomUUID } from 'node:crypto';
+import { ObjectId } from 'mongodb';
 import { beforeEach, describe, expect, it } from 'vitest';
 import * as balances from '../../src/handlers/balances';
 import * as expenses from '../../src/handlers/expenses';
@@ -6,10 +8,9 @@ import * as groups from '../../src/handlers/groups';
 import * as me from '../../src/handlers/me';
 import * as settlements from '../../src/handlers/settlements';
 import { getDb } from '../../src/repositories/db';
-import { claimKey } from '../../src/repositories/idempotency';
 import { insertExpenseOnce } from '../../src/repositories/expenses';
+import { claimKey } from '../../src/repositories/idempotency';
 import { addToGroup, alice, bob, call, carol, mallory, useTestDb } from './helpers';
-import { ObjectId } from 'mongodb';
 
 useTestDb();
 
@@ -20,7 +21,7 @@ beforeEach(async () => {
   await call(me.handler, { as: carol });
   const res = await call(groups.create, { method: 'POST', path: '/groups', body: { name: 'Flat' } });
   groupId = res.body.id;
-  for (const u of [bob, carol]) await addToGroup(groupId, u);
+  for (const user of [bob, carol]) await addToGroup(groupId, user);
 });
 
 const path = () => `/groups/${groupId}/expenses`;
@@ -54,8 +55,9 @@ async function getBalances() {
 }
 
 describe('POST /groups/{id}/expenses', () => {
-  it('the server computes the split', async () => {
+  it('computes the split on the server', async () => {
     const res = await addExpense(dinner);
+
     expect(res.status).toBe(201);
     expect(res.body.splits).toEqual([
       { userId: 'sub-alice', amountCents: 3334 },
@@ -125,7 +127,7 @@ describe('POST /groups/{id}/expenses', () => {
     expect(await (await getDb()).collection('expenses').countDocuments()).toBe(0);
   });
 
-  it('requires an Idempotency-Key, and a sane one', async () => {
+  it('requires a well-formed Idempotency-Key', async () => {
     const res = await addExpense(dinner, { key: null });
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe('IDEMPOTENCY_KEY_REQUIRED');
@@ -140,8 +142,9 @@ describe('POST /groups/{id}/expenses', () => {
 describe('idempotency', () => {
   const count = async () => (await getDb()).collection('expenses').countDocuments();
 
-  it('replay: the same key sent twice writes once and returns the same body', async () => {
+  it('replays a repeated key without writing again', async () => {
     const key = randomUUID();
+
     const first = await addExpense(dinner, { key });
     const second = await addExpense(dinner, { key });
 
@@ -152,26 +155,31 @@ describe('idempotency', () => {
     expect(await count()).toBe(1);
   });
 
-  it('concurrent retries with one key still write once', async () => {
+  it('writes once under concurrent retries with one key', async () => {
     const key = randomUUID();
+
     const results = await Promise.all(Array.from({ length: 8 }, () => addExpense(dinner, { key })));
+
     expect(new Set(results.map((r) => r.body.id)).size).toBe(1);
     expect(results.every((r) => r.status === 201)).toBe(true);
     expect(await count()).toBe(1);
   });
 
-  it('reusing a key for a different request is a 422', async () => {
+  it('returns 422 when a key is reused for a different body', async () => {
     const key = randomUUID();
     await addExpense(dinner, { key });
+
     const res = await addExpense({ ...dinner, amountCents: 999 }, { key });
+
     expect(res.status).toBe(422);
     expect(res.body.error.code).toBe('IDEMPOTENCY_KEY_REUSED');
     expect(await count()).toBe(1);
   });
 
-  it('the same key on another route is a 422 too (the hash covers method and path)', async () => {
+  it('returns 422 when a key is reused on another route', async () => {
     const key = randomUUID();
     expect((await addExpense(dinner, { key })).status).toBe(201);
+
     const res = await call(settlements.create, {
       method: 'POST',
       path: `/groups/${groupId}/settlements`,
@@ -179,23 +187,25 @@ describe('idempotency', () => {
       body: { fromUserId: alice.sub, toUserId: bob.sub, amountCents: 100 },
       headers: { 'Idempotency-Key': key },
     });
+
     expect(res.status).toBe(422);
     expect(res.body.error.code).toBe('IDEMPOTENCY_KEY_REUSED');
     expect(await (await getDb()).collection('settlements').countDocuments()).toBe(0);
   });
 
-  it('keys are per user: two users can use the same key', async () => {
+  it('scopes keys to the user who sent them', async () => {
     const key = randomUUID();
+
     await addExpense(dinner, { key });
     await addExpense({ ...dinner, paidBy: bob.sub }, { key, as: bob });
+
     expect(await count()).toBe(2);
   });
 
-  it('a crash between the write and recording the response does not double-write', async () => {
-    // Simulate attempt #1: key claimed, expense written, then Lambda died before completeKey().
+  it('does not double-write when a crash came before the response was stored', async () => {
+    // Attempt 1: the key was claimed and the expense written, then the Lambda died before completeKey().
     const key = randomUUID();
     const body = JSON.stringify(dinner);
-    const { createHash } = await import('node:crypto');
     const requestHash = createHash('sha256').update(`POST ${path()}\n${body}`).digest('hex');
     const claim = await claimKey({ userId: alice.sub, key, requestHash });
     await insertExpenseOnce({
@@ -211,8 +221,9 @@ describe('idempotency', () => {
       createdAt: new Date(),
     });
 
-    // Attempt #2 (the client's retry) finds the pending key, reuses resourceId, and inserts nothing new.
+    // Attempt 2, the client's retry, finds the pending key, reuses resourceId and inserts nothing new.
     const retry = await addExpense(dinner, { key });
+
     expect(retry.status).toBe(201);
     expect(retry.body.id).toBe(claim.doc.resourceId.toHexString());
     expect(await count()).toBe(1);
@@ -232,8 +243,11 @@ describe('settlements', () => {
   }
 
   it('records a payment and moves the balances', async () => {
-    await addExpense(dinner); // alice +6666, bob -3333, carol -3333
+    // Alice +6666, Bob -3333, Carol -3333.
+    await addExpense(dinner);
+
     const res = await settle({ fromUserId: bob.sub, toUserId: alice.sub, amountCents: 3333 }, bob);
+
     expect(res.status).toBe(201);
 
     const { balances: rows } = await getBalances();
@@ -247,19 +261,21 @@ describe('settlements', () => {
     expect(list.body.items).toHaveLength(1);
   });
 
-  it('only a party to the payment can record it', async () => {
+  it('lets only someone in the payment record it', async () => {
     const res = await settle({ fromUserId: bob.sub, toUserId: carol.sub, amountCents: 100 }, alice);
+
     expect(res.status).toBe(403);
     expect(res.body.error.code).toBe('NOT_A_PARTY');
   });
 
-  it('both people must be in the group', async () => {
+  it('requires both people to be in the group', async () => {
     const res = await settle({ fromUserId: alice.sub, toUserId: mallory.sub, amountCents: 100 });
+
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe('SETTLEMENT_USER_NOT_MEMBER');
   });
 
-  it('delete: only a party, soft, idempotent, and gone from balances and the list', async () => {
+  it('soft-deletes a payment, only for the people in it, and can repeat', async () => {
     await addExpense(dinner);
     const paid = (await settle({ fromUserId: bob.sub, toUserId: alice.sub, amountCents: 3333 }, bob)).body;
     const params = { groupId, settlementId: paid.id };
@@ -277,7 +293,8 @@ describe('settlements', () => {
     const { balances: rows } = await getBalances();
     expect(rows.find((r) => r.userId === bob.sub)!.netCents).toBe(-3333);
     expect((await call(settlements.list, { params: { groupId } })).body.items).toEqual([]);
-    expect(await (await getDb()).collection('settlements').countDocuments()).toBe(1); // kept, marked deleted
+    // Kept in the database, marked deleted.
+    expect(await (await getDb()).collection('settlements').countDocuments()).toBe(1);
 
     for (const settlementId of [new ObjectId().toHexString(), 'nope']) {
       const missing = await call(settlements.remove, { method: 'DELETE', params: { groupId, settlementId } });
@@ -286,8 +303,9 @@ describe('settlements', () => {
     }
   });
 
-  it('the list pages newest first with a cursor', async () => {
+  it('pages newest first', async () => {
     for (let i = 1; i <= 5; i++) await settle({ fromUserId: alice.sub, toUserId: bob.sub, amountCents: i });
+
     const first = await call(settlements.list, { params: { groupId }, query: { limit: '3' } });
     expect(first.body.items.map((s: { amountCents: number }) => s.amountCents)).toEqual([5, 4, 3]);
     const second = await call(settlements.list, { params: { groupId }, query: { limit: '3', cursor: first.body.nextCursor } });
@@ -295,7 +313,7 @@ describe('settlements', () => {
     expect(second.body.nextCursor).toBeNull();
   });
 
-  it('is idempotent', async () => {
+  it('writes once for a repeated key', async () => {
     const key = randomUUID();
     const send = () =>
       call(settlements.create, {
@@ -305,8 +323,11 @@ describe('settlements', () => {
         body: { fromUserId: alice.sub, toUserId: bob.sub, amountCents: 500 },
         headers: { 'Idempotency-Key': key },
       });
-    const [a, b] = [await send(), await send()];
-    expect(b.body).toEqual(a.body);
+
+    const first = await send();
+    const second = await send();
+
+    expect(second.body).toEqual(first.body);
     expect(await (await getDb()).collection('settlements').countDocuments()).toBe(1);
   });
 });
@@ -314,7 +335,9 @@ describe('settlements', () => {
 describe('GET /groups/{id}/balances', () => {
   it('derives balances and suggests who pays whom', async () => {
     await addExpense(dinner);
+
     const { balances: rows, transfers } = await getBalances();
+
     expect(rows.map((r) => [r.userId, r.netCents])).toEqual([
       [alice.sub, 6666],
       [bob.sub, -3333],
@@ -328,49 +351,58 @@ describe('GET /groups/{id}/balances', () => {
 
   it('shows everyone at zero for a new group', async () => {
     const { balances: rows, transfers } = await getBalances();
+
     expect(rows.every((r) => r.netCents === 0)).toBe(true);
     expect(rows).toHaveLength(3);
     expect(transfers).toEqual([]);
   });
 
-  it('always sums to exactly 0, whatever the ledger looks like', async () => {
+  it('always sums to zero over a random ledger', async () => {
     const people = [alice, bob, carol];
     let seed = 7;
     const rand = (n: number) => {
       seed = (seed * 16_807) % 2_147_483_647;
       return seed % n;
     };
+    const thirds = [
+      { userId: alice.sub, basisPoints: 3333 },
+      { userId: bob.sub, basisPoints: 3333 },
+      { userId: carol.sub, basisPoints: 3334 },
+    ];
+    const randomSplit = (payer: typeof alice, amountCents: number) => {
+      const kind = rand(3);
+      if (kind === 0) return { type: 'EVEN', userIds: people.slice(0, 1 + rand(3)).map((person) => person.sub) };
+      if (kind === 1) return { type: 'PERCENT', shares: thirds };
+      return { type: 'EXACT', shares: [{ userId: payer.sub, amountCents }] };
+    };
+
     for (let i = 0; i < 40; i++) {
       const payer = people[rand(3)]!;
       const amountCents = 1 + rand(1_000_000);
-      const kind = rand(3);
-      const split =
-        kind === 0
-          ? { type: 'EVEN', userIds: people.slice(0, 1 + rand(3)).map((p) => p.sub) }
-          : kind === 1
-            ? { type: 'PERCENT', shares: [{ userId: alice.sub, basisPoints: 3333 }, { userId: bob.sub, basisPoints: 3333 }, { userId: carol.sub, basisPoints: 3334 }] }
-            : { type: 'EXACT', shares: [{ userId: payer.sub, amountCents }] };
+      const split = randomSplit(payer, amountCents);
       const res = await addExpense({ description: `e${i}`, amountCents, paidBy: payer.sub, split }, { as: payer });
       expect(res.status).toBe(201);
       if (i % 5 === 0) {
-        const res2 = await call(settlements.create, {
+        const payment = await call(settlements.create, {
           as: bob,
           method: 'POST',
           params: { groupId },
           body: { fromUserId: bob.sub, toUserId: carol.sub, amountCents: 1 + rand(5000) },
           headers: { 'Idempotency-Key': randomUUID() },
         });
-        expect(res2.status).toBe(201);
+        expect(payment.status).toBe(201);
       }
     }
+
     const { balances: rows } = await getBalances();
+
     expect(rows.reduce((a, r) => a + r.netCents, 0)).toBe(0);
     expect(rows.every((r) => Number.isInteger(r.netCents))).toBe(true);
   });
 });
 
 describe('GET /groups/{id}/expenses pagination', () => {
-  it('pages newest-first by _id with no gaps or repeats', async () => {
+  it('pages newest first by _id with no gaps or repeats', async () => {
     for (let i = 0; i < 25; i++) await addExpense({ ...dinner, description: `#${i}` });
 
     const seen: string[] = [];
@@ -388,7 +420,7 @@ describe('GET /groups/{id}/expenses pagination', () => {
     expect(seen).toEqual(Array.from({ length: 25 }, (_, i) => `#${24 - i}`));
   });
 
-  it('an invalid cursor is a 400, not an empty page', async () => {
+  it('rejects an invalid cursor', async () => {
     for (const cursor of ['not-an-id', '0'.repeat(23), 'Z'.repeat(24)]) {
       const res = await call(expenses.list, { params: { groupId }, query: { cursor } });
       expect(res.status).toBe(400);
@@ -397,11 +429,11 @@ describe('GET /groups/{id}/expenses pagination', () => {
   });
 });
 
-describe('editing an expense (PUT, compare-and-set on version)', () => {
+describe('editing an expense', () => {
   const edit = (expenseId: string, body: unknown, as = alice) =>
     call(expenses.update, { as, method: 'PUT', params: { groupId, expenseId }, body });
 
-  it('any member edits; version goes up; the server recomputes the split', async () => {
+  it('lets any member edit, bumps the version and recomputes the split', async () => {
     const created = (await addExpense(dinner)).body;
     expect(created).toMatchObject({ version: 1, updatedAt: null, updatedBy: null });
 
@@ -425,12 +457,12 @@ describe('editing an expense (PUT, compare-and-set on version)', () => {
     expect(listed[0].version).toBe(2);
   });
 
-  it('a stale version is 409 EXPENSE_CHANGED; a retry of our own write is a 200', async () => {
+  it('rejects a stale version but accepts a retry of the same edit', async () => {
     const created = (await addExpense(dinner)).body;
     const mine = { ...dinner, description: 'Dinner + tip', amountCents: 11_000, version: 1 };
     expect((await edit(created.id, mine)).body.version).toBe(2);
 
-    // The response was lost and the app retries the same edit: identical content, 200, no new version.
+    // The response was lost and the app retries the same edit: same content, 200, no new version.
     const retry = await edit(created.id, mine);
     expect(retry.status).toBe(200);
     expect(retry.body.version).toBe(2);
@@ -444,20 +476,26 @@ describe('editing an expense (PUT, compare-and-set on version)', () => {
     expect((await edit(created.id, { ...dinner, description: 'Lunch', version: 2 }, bob)).body.version).toBe(3);
   });
 
-  it('two edits racing on the same version: exactly one wins', async () => {
+  it('lets exactly one of several racing edits win', async () => {
     const created = (await addExpense(dinner)).body;
+
     const results = await Promise.all(
       [1, 2, 3, 4].map((n) => edit(created.id, { ...dinner, description: `Edit ${n}`, version: 1 })),
     );
+
     expect(results.filter((r) => r.status === 200)).toHaveLength(1);
     expect(results.filter((r) => r.status === 409).every((r) => r.body.error.code === 'EXPENSE_CHANGED')).toBe(true);
   });
 
-  it('keeps the replaced versions server-side, capped, with who changed them', async () => {
+  it('keeps the last 20 versions on the server with who changed them', async () => {
     const created = (await addExpense(dinner)).body;
-    for (let v = 1; v <= 25; v++) {
-      expect((await edit(created.id, { ...dinner, description: `v${v + 1}`, version: v }, v % 2 ? bob : alice)).status).toBe(200);
+
+    for (let version = 1; version <= 25; version++) {
+      const editor = version % 2 ? bob : alice;
+      const res = await edit(created.id, { ...dinner, description: `v${version + 1}`, version }, editor);
+      expect(res.status).toBe(200);
     }
+
     const doc = await (await getDb()).collection('expenses').findOne({ _id: new ObjectId(created.id) });
     expect(doc!.version).toBe(26);
     expect(doc!.history).toHaveLength(20);
@@ -467,7 +505,7 @@ describe('editing an expense (PUT, compare-and-set on version)', () => {
     expect((await call(expenses.list, { params: { groupId } })).body.items[0].history).toBeUndefined();
   });
 
-  it('validates like create, and 404s for a missing or deleted expense', async () => {
+  it('validates like create and returns 404 for a missing or deleted expense', async () => {
     const created = (await addExpense(dinner)).body;
     const payer = await edit(created.id, { ...dinner, paidBy: mallory.sub, version: 1 });
     expect(payer.body.error.code).toBe('PAYER_NOT_MEMBER');
@@ -486,9 +524,10 @@ describe('editing an expense (PUT, compare-and-set on version)', () => {
     expect(deleted.body.error.code).toBe('EXPENSE_NOT_FOUND');
   });
 
-  it('an expense from before versioning (no version field) is version 1', async () => {
+  it('treats an expense without a version field as version 1', async () => {
     const created = (await addExpense(dinner)).body;
     await (await getDb()).collection('expenses').updateOne({ _id: new ObjectId(created.id) }, { $unset: { version: '' } });
+
     expect((await call(expenses.list, { params: { groupId } })).body.items[0].version).toBe(1);
     const res = await edit(created.id, { ...dinner, description: 'Edited', version: 1 });
     expect(res.status).toBe(200);
@@ -497,7 +536,7 @@ describe('editing an expense (PUT, compare-and-set on version)', () => {
 });
 
 describe('deleting an expense', () => {
-  it('soft-deletes: gone from the list and balances, kept in the database; deleting twice is fine', async () => {
+  it('soft-deletes, and deleting twice is fine', async () => {
     const keep = (await addExpense({ ...dinner, description: 'Keep' })).body;
     const drop = (await addExpense({ ...dinner, description: 'Drop', paidBy: bob.sub }, { as: bob })).body;
 
@@ -524,12 +563,14 @@ describe('deleting an expense', () => {
     expect(missing.body.error.code).toBe('EXPENSE_NOT_FOUND');
   });
 
-  it('deleted expenses are skipped by pagination too', async () => {
+  it('skips deleted expenses when paging', async () => {
     const ids: string[] = [];
     for (let i = 0; i < 6; i++) ids.push((await addExpense({ ...dinner, description: `#${i}` })).body.id);
     for (const id of [ids[1], ids[4]]) await call(expenses.remove, { method: 'DELETE', params: { groupId, expenseId: id! } });
+
     const first = await call(expenses.list, { params: { groupId }, query: { limit: '2' } });
     const second = await call(expenses.list, { params: { groupId }, query: { limit: '2', cursor: first.body.nextCursor } });
+
     expect([...first.body.items, ...second.body.items].map((e: { description: string }) => e.description)).toEqual(['#5', '#3', '#2', '#0']);
     expect(second.body.nextCursor).toBeNull();
   });

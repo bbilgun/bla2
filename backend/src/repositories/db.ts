@@ -1,21 +1,13 @@
+// One MongoClient per Lambda container, opened on the first request and reused by every request after it.
 import { MongoClient, type Db } from 'mongodb';
 import { forgetParameter, getSecureParameter } from '../lib/ssm';
 import { ensureIndexes } from './indexes';
 
-/**
- * One MongoClient per Lambda container.
- *
- * Module scope runs once when the container starts; the handler runs on every request.
- * Caching the connection promise here means a warm request reuses the open socket pool
- * instead of paying a TLS + auth handshake to Atlas each time (and exhausting M0's connection limit).
- */
 let dbPromise: Promise<Db> | undefined;
 let client: MongoClient | undefined;
 
-/**
- * MONGODB_URI wins when set (tests, scripts, a laptop). On Lambda only MONGODB_URI_PARAM is set, and
- * the URI is read from that SSM SecureString once per container (lib/ssm caches it).
- */
+// MONGODB_URI wins when set (tests, scripts, a laptop). On Lambda only MONGODB_URI_PARAM is set,
+// and the URI comes from that SSM parameter.
 async function mongoUri(): Promise<string> {
   if (process.env.MONGODB_URI) return process.env.MONGODB_URI;
   const param = process.env.MONGODB_URI_PARAM;
@@ -25,8 +17,8 @@ async function mongoUri(): Promise<string> {
 
 async function connect(): Promise<Db> {
   client = new MongoClient(await mongoUri(), {
-    // A Lambda container handles one request at a time; two sockets cover the occasional parallel
-    // query. Small pools keep (containers x pool) well under Atlas M0's 500-connection limit.
+    // A container serves one request at a time, so two sockets are plenty. Small pools keep
+    // containers x pool size well under the Atlas M0 limit of 500 connections.
     maxPoolSize: 2,
     serverSelectionTimeoutMS: 5_000,
     appName: 'netzero-api',
@@ -37,9 +29,11 @@ async function connect(): Promise<Db> {
   return db;
 }
 
+/**
+ * The database, connecting on first use. A failed connect is forgotten so the next request tries
+ * again, and the cached URI is dropped too in case it was rotated.
+ */
 export function getDb(): Promise<Db> {
-  // If the first connect fails, forget the rejected promise so the next request retries,
-  // and re-read the URI too in case it was rotated.
   dbPromise ??= connect().catch((err: unknown) => {
     dbPromise = undefined;
     if (process.env.MONGODB_URI_PARAM) forgetParameter(process.env.MONGODB_URI_PARAM);
@@ -48,7 +42,7 @@ export function getDb(): Promise<Db> {
   return dbPromise;
 }
 
-/** Used by tests and scripts; Lambda never closes the client. */
+/** Closes the client. Tests and scripts call this; Lambda never does. */
 export async function closeDb(): Promise<void> {
   await client?.close();
   client = undefined;

@@ -1,3 +1,4 @@
+// Receipt photos: signing an upload, confirming it, replacing it and signing a view URL.
 import { randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import * as expenses from '../../src/handlers/expenses';
@@ -6,7 +7,7 @@ import * as receipts from '../../src/handlers/receipts';
 import { deleteObject, objectExists } from '../../src/lib/s3';
 import { alice, call, useFakeAwsEnv, useTestDb } from './helpers';
 
-// HEAD and DELETE would reach S3; presigning stays real (it's local).
+// HEAD and DELETE would reach S3. Signing is local, so it runs for real.
 vi.mock('../../src/lib/s3', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/lib/s3')>()),
   objectExists: vi.fn(async () => true),
@@ -39,7 +40,7 @@ const confirm = (ids: { groupId: string; expenseId: string }, key: string) =>
   call(receipts.confirm, { method: 'PUT', params: ids, body: { key } });
 
 describe('receipts', () => {
-  it('signs a size-limited POST under groups/{groupId}/expenses/{expenseId}/, confirm saves it, then a GET', async () => {
+  it('signs an upload, saves it on confirm, then signs a view URL', async () => {
     const ids = await setup();
 
     const none = await call(receipts.viewUrl, { params: ids });
@@ -67,7 +68,7 @@ describe('receipts', () => {
       ]),
     );
 
-    // Signed but not confirmed: nothing points at it yet.
+    // Signed but not confirmed, so nothing points at it yet.
     expect((await call(expenses.list, { params: { groupId: ids.groupId } })).body.items[0].hasReceipt).toBe(false);
 
     const confirmed = await confirm(ids, upload.body.key);
@@ -81,30 +82,40 @@ describe('receipts', () => {
     expect(new URL(view.body.url).pathname).toBe(`/${upload.body.key}`);
   });
 
-  it('works with no body (defaults to JPEG)', async () => {
+  it('defaults to JPEG when there is no body', async () => {
     const ids = await setup();
+
     const upload = await sign(ids);
+
     expect(upload.status).toBe(200);
     expect(upload.body.fields['Content-Type']).toBe('image/jpeg');
   });
 
-  it('a new receipt replaces the old one, deletes the old object, and a retried confirm deletes nothing', async () => {
+  it('replaces the old receipt and deletes its object only once', async () => {
     const ids = await setup();
     const first = (await sign(ids)).body.key;
     await confirm(ids, first);
     const second = (await sign(ids, { contentType: 'image/png' })).body.key;
+
     expect((await confirm(ids, second)).status).toBe(200);
     expect(deleteObject).toHaveBeenCalledExactlyOnceWith(first);
+
+    // A retried confirm deletes nothing.
     expect((await confirm(ids, second)).status).toBe(200);
     expect(deleteObject).toHaveBeenCalledTimes(1);
   });
 
-  it('confirm: the key must be under this expense, and the object must exist', async () => {
+  it('confirms only a key under this expense that is really in S3', async () => {
     const a = await setup();
     const b = await setup();
     const keyForB = (await sign(b)).body.key;
+    const badKeys = [
+      keyForB,
+      `groups/${a.groupId}/expenses/${a.expenseId}/x.jpg`,
+      `groups/${a.groupId}/expenses/${a.expenseId}/../${b.expenseId}/k.jpg`,
+    ];
 
-    for (const key of [keyForB, `groups/${a.groupId}/expenses/${a.expenseId}/x.jpg`, `groups/${a.groupId}/expenses/${a.expenseId}/../${b.expenseId}/k.jpg`]) {
+    for (const key of badKeys) {
       const res = await confirm(a, key);
       expect(res.status).toBe(400);
       expect(res.body.error.code).toBe('INVALID_UPLOAD_KEY');
@@ -118,19 +129,23 @@ describe('receipts', () => {
     expect((await call(receipts.viewUrl, { params: a })).body.error.code).toBe('RECEIPT_NOT_FOUND');
   });
 
-  it('404s for an expense in another group', async () => {
+  it('returns 404 for an expense in another group', async () => {
     const a = await setup();
     const b = await setup();
+
     const res = await sign({ groupId: a.groupId, expenseId: b.expenseId });
+
     expect(res.status).toBe(404);
     expect(res.body.error.code).toBe('EXPENSE_NOT_FOUND');
   });
 
-  it('a deleted expense has no receipt routes: 404 EXPENSE_NOT_FOUND', async () => {
+  it('returns 404 on every receipt route for a deleted expense', async () => {
     const ids = await setup();
     const key = (await sign(ids)).body.key;
     await confirm(ids, key);
+
     await call(expenses.remove, { method: 'DELETE', params: ids });
+
     for (const res of [await sign(ids), await call(receipts.viewUrl, { params: ids }), await confirm(ids, key)]) {
       expect(res.status).toBe(404);
       expect(res.body.error.code).toBe('EXPENSE_NOT_FOUND');

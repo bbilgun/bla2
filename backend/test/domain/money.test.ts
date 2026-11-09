@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { add, cents, compare, formatCents, parseCents, sum } from '../../src/domain/money';
 
-describe('why cents', () => {
-  it('floats drift, integers do not', () => {
+describe('integer cents', () => {
+  it('stay exact where floats drift', () => {
     expect(0.1 + 0.2).not.toBe(0.3);
     expect(cents(10) + cents(20)).toBe(30);
   });
@@ -40,12 +40,13 @@ describe('formatCents', () => {
 
   it('round-trips with parseCents', () => {
     for (const n of [0, 1, 99, 100, 101, 999_999]) {
-      expect(parseCents(formatCents(cents(n)).replace(/[$,]/g, ''))).toBe(n);
+      const text = formatCents(cents(n)).replace(/[$,]/g, '');
+      expect(parseCents(text)).toBe(n);
     }
   });
 });
 
-describe('cents()', () => {
+describe('cents', () => {
   it('refuses floats and unsafe integers', () => {
     expect(() => cents(1.5)).toThrow(TypeError);
     expect(() => cents(Number.NaN)).toThrow(TypeError);
@@ -54,7 +55,7 @@ describe('cents()', () => {
 });
 
 describe('arithmetic', () => {
-  it('adds, sums, compares', () => {
+  it('adds, sums and compares', () => {
     expect(add(cents(1), cents(2))).toBe(3);
     expect(sum([cents(10), cents(20), cents(-5)])).toBe(25);
     expect(compare(cents(1), cents(2))).toBe(-1);

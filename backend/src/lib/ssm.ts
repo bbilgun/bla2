@@ -1,34 +1,32 @@
+// Reads secrets from SSM Parameter Store at cold start, so they never sit in the function's configuration
+// where anyone with GetFunction could read them. Tests vi.mock this module.
 import { GetParameterCommand, SSMClient } from '@aws-sdk/client-ssm';
 
-/**
- * Secrets are read from SSM Parameter Store at cold start, not baked into the function's environment
- * at deploy time: anyone who can read the Lambda configuration (console, GetFunction) would see them.
- *
- * Cached per container: a warm request never calls SSM. A failed read is forgotten so the next
- * request retries. Tests vi.mock this module.
- */
 let client: SSMClient | undefined;
 const cache = new Map<string, Promise<string>>();
 
+/**
+ * The decrypted value of a SecureString parameter. Cached per container, so a warm request never
+ * calls SSM. A failed read isn't cached, and the next call tries again.
+ */
 export function getSecureParameter(name: string): Promise<string> {
-  let value = cache.get(name);
-  if (!value) {
-    client ??= new SSMClient({});
-    value = client.send(new GetParameterCommand({ Name: name, WithDecryption: true })).then((out) => {
-      const v = out.Parameter?.Value;
-      if (!v) throw new Error(`SSM parameter ${name} is empty`);
-      return v;
-    });
-    const pending = value;
-    pending.catch(() => {
-      if (cache.get(name) === pending) cache.delete(name);
-    });
-    cache.set(name, pending);
-  }
-  return value;
+  const cached = cache.get(name);
+  if (cached) return cached;
+
+  client ??= new SSMClient({});
+  const pending = client.send(new GetParameterCommand({ Name: name, WithDecryption: true })).then((out) => {
+    const value = out.Parameter?.Value;
+    if (!value) throw new Error(`SSM parameter ${name} is empty`);
+    return value;
+  });
+  pending.catch(() => {
+    if (cache.get(name) === pending) cache.delete(name);
+  });
+  cache.set(name, pending);
+  return pending;
 }
 
-/** Drop a cached value, e.g. after the database rejected the connection string (it may have been rotated). */
+/** Drops a cached value, for example after the database rejected a connection string that may have been rotated. */
 export function forgetParameter(name: string): void {
   cache.delete(name);
 }

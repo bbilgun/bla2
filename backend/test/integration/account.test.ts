@@ -1,3 +1,4 @@
+// DELETE /me: refused while money is owed, otherwise removes the user from everything, safe to retry.
 import { randomUUID } from 'node:crypto';
 import { ObjectId } from 'mongodb';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -42,7 +43,7 @@ function addExpense(groupId: string, amountCents: number) {
 }
 
 describe('DELETE /me', () => {
-  it('is refused while the caller is owed or owes money anywhere, listing those groups; nothing is deleted', async () => {
+  it('is refused while the caller has a balance anywhere, naming those groups', async () => {
     const owed = await createGroup('Owed');
     const settled = await createGroup('Settled');
     await addToGroup(owed, bob);
@@ -53,11 +54,12 @@ describe('DELETE /me', () => {
     expect(res.status).toBe(409);
     expect(res.body.error.code).toBe('BALANCES_NOT_ZERO');
     expect(res.body.error.details).toEqual([{ groupId: owed, name: 'Owed' }]);
+    // Nothing was deleted.
     expect(deleteCognitoUser).not.toHaveBeenCalled();
     expect((await call(groups.list)).body.items).toHaveLength(2);
   });
 
-  it('leaves every group, deletes bills, the QR image, the users row and the Cognito user', async () => {
+  it('leaves every group and deletes bills, the QR image, the users row and the Cognito user', async () => {
     const shared = await createGroup('Shared');
     const solo = await createGroup('Solo');
     await addToGroup(shared, bob);
@@ -75,8 +77,8 @@ describe('DELETE /me', () => {
       headers: { 'Idempotency-Key': randomUUID() },
       body: { title: 'Bill', items: [{ name: 'Tea', priceCents: 100 }] },
     });
-    const qr = (await call(bills.payQrUploadUrl, { method: 'POST' })).body.key;
-    await call(bills.confirmPayQr, { method: 'PUT', body: { key: qr } });
+    const qr = (await call(me.payQrUploadUrl, { method: 'POST' })).body.key;
+    await call(me.confirmPayQr, { method: 'PUT', body: { key: qr } });
 
     const res = await deleteMe();
     expect(res.status).toBe(200);
@@ -89,7 +91,7 @@ describe('DELETE /me', () => {
     expect(await db.collection('bills').countDocuments({ hostUserId: alice.sub })).toBe(0);
     expect(await db.collection('idempotency_keys').countDocuments({ userId: alice.sub })).toBe(0);
 
-    // Bob keeps the shared group, its history, and sees Alice as gone (her balance was zero).
+    // Bob keeps the shared group and its history, and Alice is gone from it. Her balance was zero.
     const bobsGroup = await call(groups.get, { as: bob, params: { groupId: shared } });
     expect(bobsGroup.body.members.map((m: { userId: string }) => m.userId)).toEqual([bob.sub]);
     expect((await call(expenses.list, { as: bob, params: { groupId: shared } })).body.items).toHaveLength(1);
@@ -98,9 +100,10 @@ describe('DELETE /me', () => {
     expect(soloDoc!.deletedAt).toBeInstanceOf(Date);
   });
 
-  it('every step is safe to re-run: a Cognito failure part-way, then a retry, finishes the job', async () => {
+  it('finishes on retry after Cognito fails part-way', async () => {
     await createGroup('Mine');
     vi.mocked(deleteCognitoUser).mockRejectedValueOnce(new Error('cognito unavailable'));
+
     const failed = await deleteMe();
     expect(failed.status).toBe(500);
     expect(failed.body.error.code).toBe('INTERNAL');

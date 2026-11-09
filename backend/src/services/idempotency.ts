@@ -1,3 +1,5 @@
+// Makes a create safe to retry: the same Idempotency-Key never writes twice and gets the same response back.
+// docs/backend.md walks through every case.
 import { createHash } from 'node:crypto';
 import type { ObjectId } from 'mongodb';
 import { badRequest, unprocessable } from '../domain/errors';
@@ -7,28 +9,21 @@ import { claimKey, completeKey } from '../repositories/idempotency';
 const KEY_RE = /^[A-Za-z0-9_-]{8,128}$/;
 
 /**
- * Runs a money write at most once per Idempotency-Key.
- *
- *  1. Insert {userId, key} into idempotency_keys. The unique index means only one request wins.
- *  2. Lost the race / seen before?  Same body + finished -> replay the stored response.
- *                                   Same body + unfinished -> re-run with the SAME resourceId.
- *                                   Different body -> 422, the key was reused for something else.
- *  3. `write(resourceId)` must be insert-or-fetch on that _id, so re-running it can't double-write.
- *  4. Store the response on the key so the next retry is a pure replay.
- *
- * The contract for `write`: it MUST be insert-or-fetch keyed on `resourceId`, i.e. go through
- * `insertOnce()` (repositories/collections.ts) or something equally idempotent. Step 2's "unfinished"
- * branch runs it a second time after a crash; a plain insertOne would then write the resource twice,
- * and an update that isn't keyed on resourceId would apply twice. Side effects that aren't safe to
- * repeat (sending an email, charging a card) don't belong inside `write`.
- *
- * The request hash covers method + path + body, so the same key sent to a different route is a 422 too.
+ * Runs `write` at most once per Idempotency-Key and replays its response to every retry. `write` gets
+ * the _id to give the new document. It must be insert-or-fetch on that _id (insertOnce does this),
+ * because a retry after a crash runs it again with the same id. Throws 400 for a missing or malformed
+ * key and 422 when the key was used for a different request.
  */
 export async function idempotent(req: AuthedRequest, write: (resourceId: ObjectId) => Promise<Response>): Promise<Response> {
   const key = req.header('idempotency-key');
-  if (!key) throw badRequest('IDEMPOTENCY_KEY_REQUIRED', 'Send an Idempotency-Key header (a UUID) with this request');
-  if (!KEY_RE.test(key)) throw badRequest('IDEMPOTENCY_KEY_INVALID', 'Idempotency-Key must be 8-128 letters, digits, - or _');
+  if (!key) {
+    throw badRequest('IDEMPOTENCY_KEY_REQUIRED', 'Send an Idempotency-Key header (a UUID) with this request');
+  }
+  if (!KEY_RE.test(key)) {
+    throw badRequest('IDEMPOTENCY_KEY_INVALID', 'Idempotency-Key must be 8-128 letters, digits, - or _');
+  }
 
+  // Method and path are in the hash, so the same key sent to another route counts as a different request.
   const requestHash = createHash('sha256').update(`${req.method} ${req.path}\n${req.rawBody}`).digest('hex');
   const claim = await claimKey({ userId: req.caller.userId, key, requestHash });
 
@@ -40,10 +35,12 @@ export async function idempotent(req: AuthedRequest, write: (resourceId: ObjectI
       req.log.info('idempotency.replay', { key });
       return { ...claim.doc.response, headers: { 'idempotent-replayed': 'true' } };
     }
+    // Claimed but never finished: an earlier attempt crashed, or is still running. Run it again with the
+    // same resourceId; insert-or-fetch makes that safe.
     req.log.info('idempotency.resume', { key });
   }
 
-  // If this throws, the key stays pending; the client's retry resumes with the same resourceId.
+  // If this throws, the key stays pending and the client's retry resumes it.
   const res = await write(claim.doc.resourceId);
   await completeKey(claim.doc._id, { status: res.status, body: res.body });
   return res;

@@ -1,16 +1,11 @@
+// The page a guest sees after scanning a bill's QR code: one self-contained HTML document with no build
+// step and no requests except to its own API and the host's QR image. Every name and line on it was typed
+// by someone, so the script only ever sets textContent, never innerHTML.
+
 /**
- * The page a guest sees after scanning the bill QR. One self-contained HTML document: no build step,
- * no external requests except its own API and the host's QR image on S3, so it opens instantly on
- * restaurant wifi.
- *
- * Safety: every name and item comes from people typing, so the script only ever sets textContent,
- * never innerHTML. The CSP allows only this page's own nonce'd script and style, and images only from
- * the receipts bucket (the host's bank QR).
- *
- * Paying: "Би төлсөн" sends the total the guest is looking at as `paidCents`. If ticks change later,
- * the server reports the difference (`dueCents`), and the page shows what's still due or overpaid.
- *
- * The script avoids template literals on purpose: this whole file is a TS template literal.
+ * The guest page's HTML. `nonce` must match the one in the CSP header the handler sends. The script
+ * inside uses no template literals and doubles its regex backslashes, because this whole page is itself
+ * a TypeScript template literal.
  */
 export function guestPageHtml(nonce: string): string {
   return `<!doctype html>
@@ -122,12 +117,13 @@ button:disabled { opacity: .5; cursor: default; }
   var toastEl = document.getElementById('toast');
 
   var bill = null;       // latest server state
-  var me = null;         // { guestId, secret, name } kept in this browser only
+  var me = null;         // { guestId, secret, name, joined } kept in this browser only
   var desired = null;    // ticks waiting to be sent
   var sending = false;
   var errorText = null;
-  var qrImg = null;      // kept across renders so the image doesn't reload every poll
-  var stopped = false;   // the link stopped working: no more polling
+  var qrImg = null;      // kept across renders so the image doesn't reload on every poll
+  var stopped = false;   // the link is dead, so stop polling
+  var toastTimer = null;
 
   var ERRORS = {
     BILL_NOT_FOUND: 'Тооцоо олдсонгүй. Холбоосоо шалгана уу.',
@@ -140,48 +136,50 @@ button:disabled { opacity: .5; cursor: default; }
     VALIDATION_ERROR: 'Оруулсан мэдээллээ шалгана уу.',
     NETWORK: 'Интернэт холболт алга. Дахин оролдоно уу.'
   };
-  // The link itself no longer works: nothing else on the page can help.
+  // These mean the link itself is dead, so nothing else on the page can help.
   var FATAL = { BILL_NOT_FOUND: true, BILL_EXPIRED: true };
   function errorMessage(code) { return ERRORS[code] || 'Алдаа гарлаа. Дахин оролдоно уу.'; }
 
-  // ---- money: integer cents in, text out. Same rules as the app; no float math.
+  // Money: integer minor units in, text out, with the same rules as the app and no float math.
   var SYMBOLS = { USD: '$', EUR: '€', GBP: '£', MNT: '₮', KRW: '₩', CNY: '¥', JPY: '¥' };
-  // Amounts are in the currency's smallest unit: cents for most, but 1 KRW = 1 won and 1 JPY = 1 yen
-  // (no decimals). Same table as the app (mobile/lib/domain/money.dart).
+  // KRW and JPY have no minor unit, so their amounts are whole won and yen. Same table as the app.
   var ZERO_DECIMAL = { KRW: true, JPY: true };
-  function splitCents(c, currency) {
-    var abs = Math.abs(c), sign = c < 0 ? '-' : '';
+  function splitAmount(amount, currency) {
+    var abs = Math.abs(amount);
+    var sign = amount < 0 ? '-' : '';
     if (ZERO_DECIMAL[currency]) return { sign: sign, whole: String(abs), frac: '' };
     var frac = abs % 100;
     return { sign: sign, whole: String((abs - frac) / 100), frac: (frac < 10 ? '0' : '') + frac };
   }
-  function money(c, currency) {
-    var p = splitCents(c, currency);
-    var grouped = p.whole.replace(/\\B(?=(\\d{3})+(?!\\d))/g, ',');
-    var sym = SYMBOLS[currency];
+  function money(amount, currency) {
+    var parts = splitAmount(amount, currency);
+    var grouped = parts.whole.replace(/\\B(?=(\\d{3})+(?!\\d))/g, ',');
     // Tugrik amounts are almost always whole: "42,500₮", not "42,500.00₮". Same rule as the app.
-    if (currency === 'MNT') return p.sign + grouped + (p.frac === '00' ? '' : '.' + p.frac) + '₮';
-    return p.sign + (sym || currency + ' ') + grouped + (p.frac ? '.' + p.frac : '');
+    if (currency === 'MNT') return parts.sign + grouped + (parts.frac === '00' ? '' : '.' + parts.frac) + '₮';
+    var symbol = SYMBOLS[currency] || currency + ' ';
+    return parts.sign + symbol + grouped + (parts.frac ? '.' + parts.frac : '');
   }
   /** For typing into a bank app: "12500" or "12500.50". */
-  function plainAmount(c, currency) {
-    var p = splitCents(c, currency);
-    return p.frac === '00' || p.frac === '' ? p.whole : p.whole + '.' + p.frac;
+  function plainAmount(amount, currency) {
+    var parts = splitAmount(amount, currency);
+    if (parts.frac === '00' || parts.frac === '') return parts.whole;
+    return parts.whole + '.' + parts.frac;
   }
 
-  // ---- tiny DOM helper: text only, never HTML
+  // A tiny DOM helper. It only ever creates text nodes and sets textContent, never markup.
   function h(tag, props) {
     var el = document.createElement(tag);
-    if (props) for (var k in props) {
-      if (k === 'text') el.textContent = props[k];
-      else if (k === 'cls') el.className = props[k];
-      else if (k.slice(0, 2) === 'on') el.addEventListener(k.slice(2), props[k]);
-      else if (props[k] !== false && props[k] != null) el.setAttribute(k, props[k] === true ? '' : props[k]);
+    if (props) for (var key in props) {
+      var value = props[key];
+      if (key === 'text') el.textContent = value;
+      else if (key === 'cls') el.className = value;
+      else if (key.slice(0, 2) === 'on') el.addEventListener(key.slice(2), value);
+      else if (value !== false && value != null) el.setAttribute(key, value === true ? '' : value);
     }
-    var add = function (c) {
-      if (c == null || c === false) return;
-      if (Array.isArray(c)) { c.forEach(add); return; }
-      el.appendChild(typeof c === 'string' ? document.createTextNode(c) : c);
+    var add = function (child) {
+      if (child == null || child === false) return;
+      if (Array.isArray(child)) { child.forEach(add); return; }
+      el.appendChild(typeof child === 'string' ? document.createTextNode(child) : child);
     };
     for (var i = 2; i < arguments.length; i++) add(arguments[i]);
     return el;
@@ -190,8 +188,8 @@ button:disabled { opacity: .5; cursor: default; }
   function toast(text) {
     toastEl.textContent = text;
     toastEl.hidden = false;
-    clearTimeout(toast.t);
-    toast.t = setTimeout(function () { toastEl.hidden = true; }, 1600);
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { toastEl.hidden = true; }, 1600);
   }
 
   function copy(text) {
@@ -251,13 +249,13 @@ button:disabled { opacity: .5; cursor: default; }
     return '';
   }
 
-  // ---- actions
+  // Actions
 
   function refresh() {
     return api('GET', '/data').then(function (data) {
       bill = data;
-      // We had joined and we're gone: the host removed us. (A join that never got through keeps its
-      // id, so retrying it can't add a second copy of us.)
+      // We joined earlier but aren't on the bill, so the host removed us. A join that never went
+      // through keeps its stored id, so retrying it can't add us twice.
       if (me && me.joined && !myGuest()) { forgetMe(); me = null; errorText = errorMessage('GUEST_REMOVED'); }
       render();
     }, function (e) {
@@ -267,7 +265,8 @@ button:disabled { opacity: .5; cursor: default; }
 
   function join(name) {
     if (!me || me.name !== name) me = { guestId: randomId(12), secret: randomId(32), name: name };
-    saveMe(me); // before sending: a retry after a dropped connection reuses the same id
+    // Saved before sending, so a retry after a dropped connection reuses the same id.
+    saveMe(me);
     errorText = null;
     render();
     return api('POST', '/guests', { name: name, guestId: me.guestId, secret: me.secret }).then(function (res) {
@@ -284,14 +283,15 @@ button:disabled { opacity: .5; cursor: default; }
   }
 
   function toggle(itemId) {
-    var g = myGuest();
-    if (!g || bill.status !== 'OPEN') return;
-    var set = {};
-    var current = desired || g.itemIds;
-    for (var i = 0; i < current.length; i++) set[current[i]] = true;
-    if (set[itemId]) delete set[itemId]; else set[itemId] = true;
-    desired = Object.keys(set);
-    g.itemIds = desired; // show the tick now; totals update when the server answers
+    var guest = myGuest();
+    if (!guest || bill.status !== 'OPEN') return;
+    var ticked = {};
+    var current = desired || guest.itemIds;
+    for (var i = 0; i < current.length; i++) ticked[current[i]] = true;
+    if (ticked[itemId]) delete ticked[itemId]; else ticked[itemId] = true;
+    desired = Object.keys(ticked);
+    // Show the tick now. Totals update when the server answers.
+    guest.itemIds = desired;
     render();
     pushTicks();
   }
@@ -317,9 +317,9 @@ button:disabled { opacity: .5; cursor: default; }
 
   /** "I paid" sends the total on screen: that's what the guest transferred, even if ticks change later. */
   function setPaid(paid) {
-    var g = myGuest();
-    if (!g) return;
-    var body = paid ? { paid: true, paidCents: g.totalCents } : { paid: false };
+    var guest = myGuest();
+    if (!guest) return;
+    var body = paid ? { paid: true, paidCents: guest.totalCents } : { paid: false };
     sending = true;
     api('PUT', '/guests/' + encodeURIComponent(me.guestId), body, { 'x-guest-secret': me.secret })
       .then(function (data) { bill = data; errorText = null; }, function (e) {
@@ -329,7 +329,7 @@ button:disabled { opacity: .5; cursor: default; }
       .then(function () { sending = false; if (!stopped) render(); });
   }
 
-  // ---- rendering
+  // Rendering
 
   function renderFatal(text) {
     stopped = true;
@@ -339,7 +339,7 @@ button:disabled { opacity: .5; cursor: default; }
 
   function render() {
     if (!bill) return;
-    var g = myGuest();
+    var guest = myGuest();
     var open = bill.status === 'OPEN';
     var nodes = [];
 
@@ -348,13 +348,13 @@ button:disabled { opacity: .5; cursor: default; }
     if (!open) nodes.push(h('div', { cls: 'banner', text: 'Тооцоо хаагдсан. Сонголтоо өөрчлөх боломжгүй, гэхдээ төлбөрөө тэмдэглэж болно.' }));
     if (errorText) nodes.push(h('div', { cls: 'error', text: errorText }));
 
-    if (!g && open) nodes.push(joinCard());
-    nodes.push(itemsCard(g, open));
-    if (g) nodes.push(payCard(g));
+    if (!guest && open) nodes.push(joinCard());
+    nodes.push(itemsCard(guest, open));
+    if (guest) nodes.push(payCard(guest));
     nodes.push(peopleCard());
 
     app.replaceChildren.apply(app, nodes);
-    renderBar(g);
+    renderBar(guest);
   }
 
   function joinCard() {
@@ -375,14 +375,14 @@ button:disabled { opacity: .5; cursor: default; }
       input, btn);
   }
 
-  function itemsCard(g, open) {
+  function itemsCard(guest, open) {
     var mine = {};
-    if (g) for (var i = 0; i < g.itemIds.length; i++) mine[g.itemIds[i]] = true;
+    if (guest) for (var i = 0; i < guest.itemIds.length; i++) mine[guest.itemIds[i]] = true;
+    var locked = !guest || !open;
     var rows = bill.items.map(function (item) {
       var checked = !!mine[item.id];
-      var locked = !g || !open;
       var names = item.claimedBy.map(guestName).filter(Boolean);
-      var share = g && item.shares[g.id];
+      var share = guest && item.shares[guest.id];
       var box = h('input', { type: 'checkbox', checked: checked, disabled: locked, 'aria-label': item.name });
       var row = h('label', { cls: 'item' + (locked ? ' locked' : '') },
         box,
@@ -395,68 +395,67 @@ button:disabled { opacity: .5; cursor: default; }
     });
     return h('div', { cls: 'card' },
       h('h2', { text: 'Юу идэж, уусан бэ?' }),
-      h('p', { cls: 'muted small', text: g ? 'Өөрийнхөө зүйлсийг сонгоно уу. Хэд хэдэн хүн сонгосон зүйл тэдний дунд тэнцүү хуваагдана.' : 'Эхлээд нэрээ оруулаад нэгдэнэ үү.' }),
+      h('p', { cls: 'muted small', text: guest ? 'Өөрийнхөө зүйлсийг сонгоно уу. Хэд хэдэн хүн сонгосон зүйл тэдний дунд тэнцүү хуваагдана.' : 'Эхлээд нэрээ оруулаад нэгдэнэ үү.' }),
       rows);
   }
 
   /** Marked paid, then ticked more: only the difference is left to send. */
-  function stillDue(g) { return g.paidCents > 0 && g.dueCents > 0; }
-  function amountToSend(g) { return stillDue(g) ? g.dueCents : g.totalCents; }
+  function stillDue(guest) { return guest.paidCents > 0 && guest.dueCents > 0; }
+  function amountToSend(guest) { return stillDue(guest) ? guest.dueCents : guest.totalCents; }
 
-  function payCard(g) {
-    var title = stillDue(g) ? 'Үлдэгдэл төлөх' : 'Таны төлөх дүн';
-    var children = [h('h2', { text: title }), h('div', { cls: 'big', text: money(amountToSend(g), bill.currency) })];
-    if (g.totalCents === 0 && g.paidCents === 0) {
+  function payCard(guest) {
+    var title = stillDue(guest) ? 'Үлдэгдэл төлөх' : 'Таны төлөх дүн';
+    var children = [h('h2', { text: title }), h('div', { cls: 'big', text: money(amountToSend(guest), bill.currency) })];
+    if (guest.totalCents === 0 && guest.paidCents === 0) {
       children.push(h('p', { cls: 'muted small', text: 'Дээрээс идсэн, уусан зүйлээ сонгоход дүн гарна.' }));
       return h('div', { cls: 'card', id: 'pay' }, children);
     }
-    var hero = true;
-    var p = bill.payment;
-    var note = bill.code + ' ' + g.name;
-    var kv = function (k, v, copyText) {
+    var payment = bill.payment;
+    var note = bill.code + ' ' + guest.name;
+    var row = function (label, value, copyText) {
       return h('div', { cls: 'kv' },
-        h('div', null, h('div', { cls: 'k', text: k }), h('div', { cls: 'v', text: v })),
+        h('div', null, h('div', { cls: 'k', text: label }), h('div', { cls: 'v', text: value })),
         copyText ? h('button', { cls: 'link', text: 'Хуулах', onclick: function () { copy(copyText); } }) : null);
     };
-    if (p) {
-      children.push(kv('Банк', p.bankName));
-      children.push(kv('Дансны дугаар', p.accountNumber, p.accountNumber.replace(/\\s+/g, '')));
-      children.push(kv('Данс эзэмшигч', p.accountName));
+    if (payment) {
+      children.push(row('Банк', payment.bankName));
+      children.push(row('Дансны дугаар', payment.accountNumber, payment.accountNumber.replace(/\\s+/g, '')));
+      children.push(row('Данс эзэмшигч', payment.accountName));
     } else {
       children.push(h('p', { cls: 'muted small', text: bill.hostName + '-тэй төлбөрөө тохиролцоно уу.' }));
     }
-    children.push(kv('Дүн', money(amountToSend(g), bill.currency), plainAmount(amountToSend(g), bill.currency)));
-    children.push(kv('Гүйлгээний утга', note, note));
+    children.push(row('Дүн', money(amountToSend(guest), bill.currency), plainAmount(amountToSend(guest), bill.currency)));
+    children.push(row('Гүйлгээний утга', note, note));
     if (bill.payQrUrl) {
       if (!qrImg) qrImg = h('img', { cls: 'qr', alt: 'Төлбөрийн QR', src: bill.payQrUrl, referrerpolicy: 'no-referrer' });
       children.push(qrImg);
       children.push(h('p', { cls: 'muted small center', text: 'QR зургийг удаан дарж хадгалаад, банкны аппаараа уншуулна уу.' }));
     }
-    if (g.paid) {
+    if (guest.paid) {
       children.push(h('p', { cls: 'center mine', text: 'Төлсөн гэж тэмдэглэсэн ✓' }));
-      if (g.dueCents < 0) {
+      if (guest.dueCents < 0) {
         children.push(h('p', { cls: 'center small', id: 'over',
-          text: 'Та ' + money(-g.dueCents, bill.currency) + ' илүү төлсөн байна. ' + bill.hostName + '-тэй тохиролцоно уу.' }));
+          text: 'Та ' + money(-guest.dueCents, bill.currency) + ' илүү төлсөн байна. ' + bill.hostName + '-тэй тохиролцоно уу.' }));
       }
       children.push(h('button', { cls: 'ghost', text: 'Буцаах', disabled: sending, onclick: function () { setPaid(false); } }));
     } else {
-      if (stillDue(g)) {
+      if (stillDue(guest)) {
         children.push(h('p', { cls: 'center small', id: 'due',
-          text: 'Та ' + money(g.paidCents, bill.currency) + ' төлсөн. Сонголт өөрчлөгдсөн тул ' + money(g.dueCents, bill.currency) + ' дутуу байна.' }));
+          text: 'Та ' + money(guest.paidCents, bill.currency) + ' төлсөн. Сонголт өөрчлөгдсөн тул ' + money(guest.dueCents, bill.currency) + ' дутуу байна.' }));
       }
       children.push(h('button', { text: 'Би төлсөн', disabled: sending, onclick: function () { setPaid(true); } }));
     }
-    return h('div', { cls: hero ? 'card hero' : 'card', id: 'pay' }, children);
+    return h('div', { cls: 'card hero', id: 'pay' }, children);
   }
 
   function peopleCard() {
-    var rows = bill.guests.map(function (p) {
-      var label = p.name + (p.isHost ? ' (төлөгч)' : '') + (me && p.id === me.guestId ? ' (та)' : '');
+    var rows = bill.guests.map(function (person) {
+      var label = person.name + (person.isHost ? ' (төлөгч)' : '') + (me && person.id === me.guestId ? ' (та)' : '');
       return h('div', { cls: 'person' },
         h('span', null, label,
-          p.paid && !p.isHost ? h('span', { cls: 'badge', text: 'Төлсөн' }) : null,
-          !p.paid && !p.isHost && p.paidCents > 0 ? h('span', { cls: 'badge', text: 'Дутуу' }) : null),
-        h('span', { cls: 'num', text: money(p.totalCents, bill.currency) }));
+          person.paid && !person.isHost ? h('span', { cls: 'badge', text: 'Төлсөн' }) : null,
+          !person.paid && !person.isHost && person.paidCents > 0 ? h('span', { cls: 'badge', text: 'Дутуу' }) : null),
+        h('span', { cls: 'num', text: money(person.totalCents, bill.currency) }));
     });
     if (bill.unclaimedCents > 0) {
       rows.push(h('div', { cls: 'person muted' }, h('span', { text: 'Хэн ч сонгоогүй' }), h('span', { cls: 'num', text: money(bill.unclaimedCents, bill.currency) })));
@@ -464,22 +463,26 @@ button:disabled { opacity: .5; cursor: default; }
     return h('div', { cls: 'card' }, h('h2', { text: 'Бүгд' }), rows);
   }
 
-  function renderBar(g) {
-    if (!g || (g.totalCents === 0 && g.paidCents === 0)) { bar.hidden = true; return; }
+  function renderBar(guest) {
+    if (!guest || (guest.totalCents === 0 && guest.paidCents === 0)) { bar.hidden = true; return; }
     bar.hidden = false;
-    var label = g.paid ? 'Төлсөн' : stillDue(g) ? 'Үлдэгдэл' : 'Таны дүн';
+    var label = 'Таны дүн';
+    if (guest.paid) label = 'Төлсөн';
+    else if (stillDue(guest)) label = 'Үлдэгдэл';
     bar.replaceChildren(h('div', { cls: 'in' },
-      h('div', { cls: 'total' }, h('div', { cls: 'muted small', text: label }), h('strong', { cls: 'num', text: money(amountToSend(g), bill.currency) })),
+      h('div', { cls: 'total' }, h('div', { cls: 'muted small', text: label }), h('strong', { cls: 'num', text: money(amountToSend(guest), bill.currency) })),
       h('button', { text: 'Төлөх', onclick: function () { document.getElementById('pay').scrollIntoView({ behavior: 'smooth' }); } })));
   }
 
-  // ---- start
+  // Start
 
   me = loadMe();
   refresh();
-  // Others tick lines too; shared lines re-split as they do. Poll while the page is visible.
+  // Others tick lines too, and shared lines re-split as they do, so poll while the page is visible.
+  // Skip a poll while a write is in flight or while someone is typing their name.
   setInterval(function () {
-    if (stopped || document.hidden || sending || desired || (!myGuest() && document.activeElement && document.activeElement.id === 'name')) return;
+    var typingName = !myGuest() && document.activeElement && document.activeElement.id === 'name';
+    if (stopped || document.hidden || sending || desired || typingName) return;
     refresh();
   }, 5000);
 })();

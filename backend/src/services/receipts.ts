@@ -1,49 +1,56 @@
+// Receipt photos on group expenses, uploaded straight to S3 in two steps (see services/uploads.ts).
+// Membership is checked before any URL is signed.
 import { notFound } from '../domain/errors';
-import { ConfirmUploadDto, ReceiptUploadDto } from '../dto';
-import type { AuthedRequest } from '../lib/http';
-import { signUpload, signView, VIEW_TTL_SECONDS, type SignedUpload } from '../lib/s3';
+import { ConfirmUploadDto, ImageUploadDto } from '../dto';
+import type { AuthedRequest, Response } from '../lib/http';
+import { signUpload, signView, VIEW_TTL_SECONDS } from '../lib/s3';
 import { toObjectId } from '../repositories/collections';
+import type { ExpenseDoc } from '../repositories/documents';
 import { findExpense, setReceiptKey } from '../repositories/expenses';
 import { requireMembership } from './groups';
 import { expenseJson } from './serializers';
 import { discardReplaced, newImageKey, requireUploadedKey } from './uploads';
 
-/** Receipt photos on group expenses. Membership is checked before any URL is signed. */
-
 const expenseNotFound = () => notFound('EXPENSE_NOT_FOUND', 'Expense not found');
 
-async function loadExpense(req: AuthedRequest, groupId: string, expenseId: string) {
-  // Membership first: no URL is ever signed for a group the caller isn't in.
+// Every receipt for an expense lives under its own prefix, so a key can't be confirmed on the wrong expense.
+function receiptPrefix(expense: ExpenseDoc): string {
+  return `groups/${expense.groupId.toHexString()}/expenses/${expense._id.toHexString()}/`;
+}
+
+async function loadExpense(req: AuthedRequest, groupId: string, expenseId: string): Promise<ExpenseDoc> {
   const group = await requireMembership(groupId, req.caller);
   const id = toObjectId(expenseId);
-  const expense = id ? await findExpense(group._id, id) : null; // deleted expenses look missing
+  // A deleted expense looks missing.
+  const expense = id ? await findExpense(group._id, id) : null;
   if (!expense) throw expenseNotFound();
-  return { group, expense };
+  return expense;
 }
 
-const receiptPrefix = (groupId: string, expenseId: string) => `groups/${groupId}/expenses/${expenseId}/`;
-
-/** POST …/receipt-url: a presigned POST under this expense's prefix. Nothing is saved yet. */
-export async function createUploadUrl(req: AuthedRequest, groupId: string, expenseId: string): Promise<SignedUpload> {
-  const { group, expense } = await loadExpense(req, groupId, expenseId);
-  const { contentType } = ReceiptUploadDto.parse(req.body);
-  const key = newImageKey(receiptPrefix(group._id.toHexString(), expense._id.toHexString()), contentType);
-  return signUpload(key, contentType);
+/** Signs an upload under this expense's prefix. Nothing is saved until the app confirms. */
+export async function createReceiptUploadUrl(req: AuthedRequest, groupId: string, expenseId: string): Promise<Response> {
+  const expense = await loadExpense(req, groupId, expenseId);
+  const { contentType } = ImageUploadDto.parse(req.body);
+  const key = newImageKey(receiptPrefix(expense), contentType);
+  return { status: 200, body: await signUpload(key, contentType) };
 }
 
-/** PUT …/receipt { key }: the upload finished. Saves the key and deletes the receipt it replaced. */
-export async function confirmReceipt(req: AuthedRequest, groupId: string, expenseId: string) {
-  const { group, expense } = await loadExpense(req, groupId, expenseId);
+/** Saves an uploaded receipt on the expense and deletes the one it replaced. */
+export async function confirmReceipt(req: AuthedRequest, groupId: string, expenseId: string): Promise<Response> {
+  const expense = await loadExpense(req, groupId, expenseId);
   const { key } = ConfirmUploadDto.parse(req.body);
-  await requireUploadedKey(key, receiptPrefix(group._id.toHexString(), expense._id.toHexString()));
-  const before = await setReceiptKey(group._id, expense._id, key);
-  if (!before) throw expenseNotFound(); // deleted meanwhile
+  await requireUploadedKey(key, receiptPrefix(expense));
+
+  const before = await setReceiptKey(expense.groupId, expense._id, key);
+  // Deleted between our read and the write.
+  if (!before) throw expenseNotFound();
   await discardReplaced(before.receiptKey, key, req.log);
-  return expenseJson({ ...before, receiptKey: key });
+  return { status: 200, body: expenseJson({ ...before, receiptKey: key }) };
 }
 
-export async function createViewUrl(req: AuthedRequest, groupId: string, expenseId: string) {
-  const { expense } = await loadExpense(req, groupId, expenseId);
+/** Signs a short-lived URL to show the expense's receipt. 404 RECEIPT_NOT_FOUND if it has none. */
+export async function createReceiptViewUrl(req: AuthedRequest, groupId: string, expenseId: string): Promise<Response> {
+  const expense = await loadExpense(req, groupId, expenseId);
   if (!expense.receiptKey) throw notFound('RECEIPT_NOT_FOUND', 'This expense has no receipt');
-  return { url: await signView(expense.receiptKey), expiresIn: VIEW_TTL_SECONDS };
+  return { status: 200, body: { url: await signView(expense.receiptKey), expiresIn: VIEW_TTL_SECONDS } };
 }

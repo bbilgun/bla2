@@ -2,10 +2,10 @@
 # Walks the whole API on a deployed (non-prod) stage with curl: the "is the backend done?" check.
 #   ./scripts/smoke.sh you@example.com 'Passw0rd123' [stage]
 #
-# Group membership is invite + accept, which needs a second account. Pass one to test the whole flow:
+# Joining a group means invite and accept, which needs a second account. Pass one to test the whole flow:
 #   FRIEND_EMAIL=bat@example.com FRIEND_PASSWORD='Passw0rd123' ./scripts/smoke.sh you@example.com 'Passw0rd123'
-# (create it with ./scripts/create-user.sh; its email is verified). Without it, the invite is created and
-# cancelled, and the two-person steps are skipped.
+# Create it with ./scripts/create-user.sh, which marks the email verified. Without a friend, the invite is
+# created and cancelled, and the two-person steps are skipped.
 #
 # Signs in with USER_PASSWORD_AUTH (scripts/get-token.sh), which only non-prod app clients allow.
 set -euo pipefail

@@ -1,28 +1,31 @@
-import { isDuplicateKeyError, users, type UserDoc } from './collections';
+// The users collection: one row per Cognito user, plus their saved bank details and bank QR.
+import { isDuplicateKeyError, users } from './collections';
+import type { PaymentInfo, UserDoc } from './documents';
 
+/** The user row after an upsert, and as it was before. */
 export interface UpsertedUser {
   user: UserDoc;
-  /** The row as it was before this call; null on the user's first request. */
+  /** Null on the user's first request. */
   before: UserDoc | null;
 }
 
-/** Records the caller from their token claims. Returns the row before and after, so callers can see what changed. */
+/** Creates or updates the user from their token's claims. Returns the row before and after the write. */
 export async function upsertUser(input: { userId: string; email: string; name: string }): Promise<UpsertedUser> {
   const col = await users();
   const now = new Date();
-  const applied = (before: UserDoc | null): UserDoc =>
-    before
-      ? { ...before, email: input.email, name: input.name, updatedAt: now }
-      : { _id: input.userId, email: input.email, name: input.name, createdAt: now, updatedAt: now };
+
   try {
     const before = await col.findOneAndUpdate(
       { _id: input.userId },
       { $set: { email: input.email, name: input.name, updatedAt: now }, $setOnInsert: { createdAt: now } },
       { upsert: true, returnDocument: 'before' },
     );
-    return { user: applied(before), before };
+    const user: UserDoc = before
+      ? { ...before, email: input.email, name: input.name, updatedAt: now }
+      : { _id: input.userId, email: input.email, name: input.name, createdAt: now, updatedAt: now };
+    return { user, before };
   } catch (err) {
-    // Two concurrent first requests can both try the upsert; the loser just reads the winner's row.
+    // Two first requests at once can both try to insert. The loser reads the winner's row.
     if (isDuplicateKeyError(err)) {
       const existing = await col.findOne({ _id: input.userId });
       if (existing) return { user: existing, before: existing };
@@ -31,11 +34,23 @@ export async function upsertUser(input: { userId: string; email: string; name: s
   }
 }
 
+/** A user row, or null. */
 export async function findUser(userId: string): Promise<UserDoc | null> {
   return (await users()).findOne({ _id: userId });
 }
 
-/** Saves the confirmed bank-QR key and returns the key it replaced (to delete from S3), if any. */
+/** Saves the bank details from a bill, to pre-fill the user's next one. */
+export async function savePaymentProfile(userId: string, payment: PaymentInfo): Promise<void> {
+  await (await users()).updateOne({ _id: userId }, { $set: { payment } });
+}
+
+/** The S3 key of the user's bank QR image, or null if they haven't uploaded one. */
+export async function findPayQrKey(userId: string): Promise<string | null> {
+  const user = await (await users()).findOne({ _id: userId }, { projection: { payQrKey: 1 } });
+  return user?.payQrKey ?? null;
+}
+
+/** Saves a confirmed bank QR key. Returns the key it replaced, if any, so the caller can delete that object. */
 export async function setPayQrKey(userId: string, key: string): Promise<string | null> {
   const before = await (await users()).findOneAndUpdate(
     { _id: userId },
@@ -45,6 +60,7 @@ export async function setPayQrKey(userId: string, key: string): Promise<string |
   return before?.payQrKey ?? null;
 }
 
+/** Deletes the user row. */
 export async function deleteUser(userId: string): Promise<void> {
   await (await users()).deleteOne({ _id: userId });
 }

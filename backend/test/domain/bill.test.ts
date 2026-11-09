@@ -2,77 +2,86 @@ import { describe, expect, it } from 'vitest';
 import { computeBill } from '../../src/domain/bill';
 
 describe('computeBill', () => {
-  it('a line ticked by several people is split between them to the cent', () => {
-    // 30,000.00₮ of khuushuur shared by 3, plus a 4,500.00₮ drink only Bat had.
-    const b = computeBill(
-      [
-        { id: 'khuushuur', priceCents: 3_000_000 },
-        { id: 'cola', priceCents: 450_000 },
-      ],
-      [
-        { id: 'bat', itemIds: ['khuushuur', 'cola'] },
-        { id: 'saraa', itemIds: ['khuushuur'] },
-        { id: 'host', itemIds: ['khuushuur'] },
-      ],
-    );
-    expect(b.guestTotals.get('bat')).toBe(1_000_000 + 450_000);
-    expect(b.guestTotals.get('saraa')).toBe(1_000_000);
-    expect(b.guestTotals.get('host')).toBe(1_000_000);
-    expect(b.claimers.get('khuushuur')).toEqual(['bat', 'host', 'saraa']);
-    expect(b.unclaimedCents).toBe(0);
+  it('splits a shared line evenly to the cent', () => {
+    // 30,000.00₮ of khuushuur shared by three, plus a 4,500.00₮ drink only Bat had.
+    const items = [
+      { id: 'khuushuur', priceCents: 3_000_000 },
+      { id: 'cola', priceCents: 450_000 },
+    ];
+    const guests = [
+      { id: 'bat', itemIds: ['khuushuur', 'cola'] },
+      { id: 'saraa', itemIds: ['khuushuur'] },
+      { id: 'host', itemIds: ['khuushuur'] },
+    ];
+
+    const bill = computeBill(items, guests);
+
+    expect(bill.guestTotals.get('bat')).toBe(1_000_000 + 450_000);
+    expect(bill.guestTotals.get('saraa')).toBe(1_000_000);
+    expect(bill.guestTotals.get('host')).toBe(1_000_000);
+    expect(bill.claimers.get('khuushuur')).toEqual(['bat', 'host', 'saraa']);
+    expect(bill.unclaimedCents).toBe(0);
   });
 
-  it('a spare cent goes to the smallest guest id, every time', () => {
-    const b = computeBill([{ id: 'x', priceCents: 1000 }], [
+  it('gives a spare cent to the smallest guest id', () => {
+    const guests = [
       { id: 'c', itemIds: ['x'] },
       { id: 'a', itemIds: ['x'] },
       { id: 'b', itemIds: ['x'] },
-    ]);
-    expect(Object.fromEntries(b.shares.get('x')!)).toEqual({ a: 334, b: 333, c: 333 });
+    ];
+
+    const bill = computeBill([{ id: 'x', priceCents: 1000 }], guests);
+
+    expect(Object.fromEntries(bill.shares.get('x')!)).toEqual({ a: 334, b: 333, c: 333 });
   });
 
-  it('lines nobody ticked are unclaimed; guests with no ticks owe 0', () => {
-    const b = computeBill(
-      [
-        { id: 'a', priceCents: 500 },
-        { id: 'b', priceCents: 700 },
-      ],
-      [
-        { id: 'g1', itemIds: ['a'] },
-        { id: 'g2', itemIds: [] },
-      ],
-    );
-    expect(b.totalCents).toBe(1200);
-    expect(b.claimedCents).toBe(500);
-    expect(b.unclaimedCents).toBe(700);
-    expect(b.guestTotals.get('g2')).toBe(0);
-    expect(b.claimers.get('b')).toEqual([]);
+  it('leaves unticked lines unclaimed and guests without ticks at zero', () => {
+    const items = [
+      { id: 'a', priceCents: 500 },
+      { id: 'b', priceCents: 700 },
+    ];
+    const guests = [
+      { id: 'g1', itemIds: ['a'] },
+      { id: 'g2', itemIds: [] },
+    ];
+
+    const bill = computeBill(items, guests);
+
+    expect(bill.totalCents).toBe(1200);
+    expect(bill.claimedCents).toBe(500);
+    expect(bill.unclaimedCents).toBe(700);
+    expect(bill.guestTotals.get('g2')).toBe(0);
+    expect(bill.claimers.get('b')).toEqual([]);
   });
 
-  it('ticks on lines that no longer exist are ignored', () => {
-    const b = computeBill([{ id: 'a', priceCents: 500 }], [{ id: 'g', itemIds: ['a', 'deleted'] }]);
-    expect(b.guestTotals.get('g')).toBe(500);
+  it('ignores ticks on lines that are not on the bill', () => {
+    const bill = computeBill([{ id: 'a', priceCents: 500 }], [{ id: 'g', itemIds: ['a', 'deleted'] }]);
+
+    expect(bill.guestTotals.get('g')).toBe(500);
   });
 
-  it('property: guest totals + unclaimed always equal the bill total, over 2,000 random bills', () => {
+  it('always adds up to the bill total over 2,000 random bills', () => {
     let seed = 42;
     const rand = (n: number) => {
       seed = (seed * 1_103_515_245 + 12_345) % 2_147_483_648;
       return seed % n;
     };
+
     for (let run = 0; run < 2000; run++) {
       const items = Array.from({ length: 1 + rand(12) }, (_, i) => ({ id: `i${i}`, priceCents: 1 + rand(5_000_000) }));
       const guests = Array.from({ length: 1 + rand(9) }, (_, g) => ({
         id: `g${g}`,
-        itemIds: items.filter(() => rand(3) === 0).map((i) => i.id),
+        itemIds: items.filter(() => rand(3) === 0).map((item) => item.id),
       }));
-      const b = computeBill(items, guests);
-      const guestSum = [...b.guestTotals.values()].reduce((a, c) => a + c, 0);
-      expect(guestSum + b.unclaimedCents).toBe(items.reduce((a, i) => a + i.priceCents, 0));
+
+      const bill = computeBill(items, guests);
+
+      const guestSum = [...bill.guestTotals.values()].reduce((acc, total) => acc + total, 0);
+      expect(guestSum + bill.unclaimedCents).toBe(items.reduce((acc, item) => acc + item.priceCents, 0));
       for (const item of items) {
-        const shares = [...b.shares.get(item.id)!.values()];
+        const shares = [...bill.shares.get(item.id)!.values()];
         if (shares.length > 0) {
-          expect(shares.reduce((a, c) => a + c, 0)).toBe(item.priceCents);
+          expect(shares.reduce((acc, share) => acc + share, 0)).toBe(item.priceCents);
           expect(Math.max(...shares) - Math.min(...shares)).toBeLessThanOrEqual(1);
         }
       }

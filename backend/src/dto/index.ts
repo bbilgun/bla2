@@ -1,36 +1,36 @@
+// Zod schemas for every request body and query string. Services parse input with these before doing
+// anything else, so a service never sees unvalidated data. A failed parse becomes a 400 VALIDATION_ERROR.
+import { ObjectId } from 'mongodb';
 import { z } from 'zod';
 import { MAX_CENTS } from '../domain/money';
-
-/** Zod DTOs: every request body is parsed here, at the boundary, before any service sees it. */
 
 const userId = z.string().min(1).max(128);
 const centsAmount = z.number().int('Amount must be whole cents').min(0).max(MAX_CENTS);
 const positiveCents = centsAmount.min(1, 'Amount must be more than zero');
+const currencyCode = z.string().regex(/^[A-Z]{3}$/, 'Use a 3-letter currency code');
+const groupName = z.string().trim().min(1, 'Name is required').max(80);
 
+/** Body of POST /groups. The currency defaults to USD. */
 export const CreateGroupDto = z.object({
-  name: z.string().trim().min(1, 'Name is required').max(80),
-  currency: z
-    .string()
-    .regex(/^[A-Z]{3}$/, 'Use a 3-letter currency code')
-    .default('USD'),
+  name: groupName,
+  currency: currencyCode.default('USD'),
 });
-export type CreateGroupDto = z.infer<typeof CreateGroupDto>;
 
+/** Body of PATCH /groups/{groupId}. */
 export const RenameGroupDto = z.object({
-  name: z.string().trim().min(1, 'Name is required').max(80),
+  name: groupName,
 });
-export type RenameGroupDto = z.infer<typeof RenameGroupDto>;
 
-/** Invites go to an email; the invitee accepts once Cognito has verified they own it. */
+/** Body of POST /groups/{groupId}/invites. The email is trimmed and lower-cased. */
 export const InviteDto = z.object({
   email: z
     .string()
     .trim()
     .pipe(z.email('Enter a valid email').max(254))
-    .transform((e) => e.toLowerCase()),
+    .transform((email) => email.toLowerCase()),
 });
-export type InviteDto = z.infer<typeof InviteDto>;
 
+/** How to split an expense: evenly, by exact amounts, or by percentages in basis points. */
 export const SplitDto = z.discriminatedUnion('type', [
   z.object({ type: z.literal('EVEN'), userIds: z.array(userId).min(1).max(50) }),
   z.object({
@@ -46,6 +46,7 @@ export const SplitDto = z.discriminatedUnion('type', [
   }),
 ]);
 
+/** Body of POST /groups/{groupId}/expenses. */
 export const CreateExpenseDto = z.object({
   description: z.string().trim().min(1, 'Description is required').max(200),
   amountCents: positiveCents,
@@ -54,12 +55,12 @@ export const CreateExpenseDto = z.object({
 });
 export type CreateExpenseDto = z.infer<typeof CreateExpenseDto>;
 
-/** An edit sends the whole expense again plus the version it was based on (compare-and-set). */
+/** Body of PUT on an expense: the whole expense again, plus the version the edit was based on. */
 export const UpdateExpenseDto = CreateExpenseDto.extend({
   version: z.number().int().min(1),
 });
-export type UpdateExpenseDto = z.infer<typeof UpdateExpenseDto>;
 
+/** Body of POST /groups/{groupId}/settlements: "from paid to this much". */
 export const CreateSettlementDto = z
   .object({
     fromUserId: userId,
@@ -67,35 +68,41 @@ export const CreateSettlementDto = z
     amountCents: positiveCents,
   })
   .refine((s) => s.fromUserId !== s.toUserId, { message: 'Cannot settle with yourself', path: ['toUserId'] });
-export type CreateSettlementDto = z.infer<typeof CreateSettlementDto>;
 
-/** `?limit=&cursor=` for every newest-first list. The cursor is the last _id of the previous page. */
-export const pageQuery = (defaultLimit: number) =>
-  z.object({
+/**
+ * `?limit=&cursor=` for a newest-first list. The cursor is the last id of the previous page and comes
+ * out as an ObjectId.
+ */
+export function pageQuery(defaultLimit: number) {
+  return z.object({
     limit: z.coerce.number().int().min(1).max(100).default(defaultLimit),
     cursor: z
       .string()
       .regex(/^[a-f0-9]{24}$/, 'Invalid cursor')
+      .transform((id) => new ObjectId(id))
       .optional(),
   });
-export const PageQueryDto = pageQuery(20);
-export type PageQueryDto = z.infer<typeof PageQueryDto>;
+}
 
-export const ReceiptUploadDto = z
+/** The usual page query: 20 items unless the app asks for another number. */
+export const PageQueryDto = pageQuery(20);
+
+/** Body of a request for an image upload URL. JPEG unless the app says otherwise; the body is optional. */
+export const ImageUploadDto = z
   .object({
     contentType: z.enum(['image/jpeg', 'image/png', 'image/heic']).default('image/jpeg'),
   })
   .default({ contentType: 'image/jpeg' });
 
-/** "I finished uploading this key." The server checks the prefix and that the object exists. */
+/** Body of an upload confirmation: the key the app just uploaded to. */
 export const ConfirmUploadDto = z.object({ key: z.string().min(1).max(512) });
 
-// ---------------------------------------------------------------- bills (QR bill splitting)
+// Bills
 
-const currencyCode = z.string().regex(/^[A-Z]{3}$/, 'Use a 3-letter currency code');
-/** Ids the server hands out (items) or the guest's browser generates (guests): URL-safe random strings. */
+/** Ids the server hands out (lines) or a guest's browser makes up (guests): URL-safe random strings. */
 const shortId = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/, 'Invalid id');
 
+/** Where guests send the money: the host's bank account. */
 export const PaymentDto = z.object({
   bankName: z.string().trim().min(1, 'Bank is required').max(60),
   accountNumber: z
@@ -106,9 +113,8 @@ export const PaymentDto = z.object({
     .regex(/^[0-9A-Za-z -]+$/, 'Account number: letters, digits, spaces and dashes only'),
   accountName: z.string().trim().min(1, 'Account holder is required').max(80),
 });
-export type PaymentDto = z.infer<typeof PaymentDto>;
 
-/** The whole editable content of a bill. Create sends it once; edit sends it again in full. */
+/** The whole editable content of a bill. Create sends it once and every edit sends it again in full. */
 export const BillContentDto = z
   .object({
     title: z.string().trim().min(1, 'Title is required').max(80),
@@ -116,7 +122,7 @@ export const BillContentDto = z
     items: z
       .array(
         z.object({
-          /** Present when editing an existing line, so guests keep their ticks on it. */
+          // Sent when editing an existing line, so guests keep their ticks on it.
           id: shortId.optional(),
           name: z.string().trim().min(1, 'Item name is required').max(80),
           priceCents: positiveCents,
@@ -126,29 +132,28 @@ export const BillContentDto = z
       .max(100),
     payment: PaymentDto.nullable().default(null),
   })
-  .refine((b) => b.items.reduce((acc, i) => acc + i.priceCents, 0) <= MAX_CENTS, {
+  .refine((bill) => bill.items.reduce((acc, item) => acc + item.priceCents, 0) <= MAX_CENTS, {
     message: 'Bill total is too large',
     path: ['items'],
   });
 export type BillContentDto = z.infer<typeof BillContentDto>;
 
+/** Body of POST /bills/{billId}/status. */
 export const BillStatusDto = z.object({ status: z.enum(['OPEN', 'CLOSED']) });
 
 /**
  * A guest joining from the web page. The browser makes up its own id and secret, so a retried join
- * (flaky restaurant wifi) finds the guest it already created instead of adding a second one.
+ * on flaky wifi finds the guest it already created.
  */
 export const JoinBillDto = z.object({
   name: z.string().trim().min(1, 'Name is required').max(40),
   guestId: z.string().regex(/^[A-Za-z0-9_-]{16,64}$/, 'Invalid guest id'),
   secret: z.string().regex(/^[A-Za-z0-9_-]{32,128}$/, 'Invalid guest secret'),
 });
-export type JoinBillDto = z.infer<typeof JoinBillDto>;
 
 /**
- * Ticks and/or the paid mark. Ticks are the full list (not a toggle), so resending is harmless.
- * `paid: true` stores `paidCents` (the amount the guest saw and transferred), or their current total
- * when it's absent; `paid: false` stores 0.
+ * A change to one guest: their full list of ticks, the paid mark, or both. Sending the full list
+ * makes a resend harmless. `paidCents` is the amount the guest saw and transferred.
  */
 export const GuestUpdateDto = z
   .object({

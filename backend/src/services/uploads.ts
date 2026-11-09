@@ -1,25 +1,25 @@
+// The shared steps of a two-step image upload (receipts and the bank QR): pick a key, then check the
+// key the app confirms before saving it. Nothing points at a key until it's confirmed.
 import { randomUUID } from 'node:crypto';
 import { badRequest, conflict } from '../domain/errors';
 import type { Logger } from '../lib/logger';
 import { deleteObject, IMAGE_EXTENSIONS, objectExists, type ImageContentType } from '../lib/s3';
 
-/**
- * Two-step uploads (receipts, the bank QR):
- *   1. sign: the server picks the key under a prefix only this resource/user owns and signs a POST for it.
- *   2. confirm: the app says "done"; the server checks the key is under that same prefix and the object is
- *      really in S3, saves it, and deletes the object it replaced.
- * Nothing points at a key until step 2, so an abandoned upload never shows up as a broken image.
- */
-
+// What we put after the prefix: a UUID and an image extension. Nothing else can be confirmed.
 const KEY_TAIL = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(jpg|png|heic)$/;
 
+/** A fresh, unguessable key under `prefix`. */
 export function newImageKey(prefix: string, contentType: ImageContentType): string {
   return `${prefix}${randomUUID()}.${IMAGE_EXTENSIONS[contentType]}`;
 }
 
-/** 400 INVALID_UPLOAD_KEY unless the key is one we could have signed under `prefix`; 409 UPLOAD_NOT_FOUND unless it's in S3. */
+/**
+ * Checks a key the app says it uploaded. Throws 400 INVALID_UPLOAD_KEY unless it's a key we could have
+ * signed under `prefix`, and 409 UPLOAD_NOT_FOUND unless the object is really in S3.
+ */
 export async function requireUploadedKey(key: string, prefix: string): Promise<void> {
-  if (!key.startsWith(prefix) || !KEY_TAIL.test(key.slice(prefix.length))) {
+  const ours = key.startsWith(prefix) && KEY_TAIL.test(key.slice(prefix.length));
+  if (!ours) {
     throw badRequest('INVALID_UPLOAD_KEY', 'That upload key does not belong here');
   }
   if (!(await objectExists(key))) {
@@ -27,7 +27,10 @@ export async function requireUploadedKey(key: string, prefix: string): Promise<v
   }
 }
 
-/** The new key is saved already; failing to delete the old object only leaves an orphan, never a broken link. */
+/**
+ * Deletes the object a new upload replaced. The new key is already saved by now, so a failure here
+ * only leaves an orphan in the bucket. It's logged, not thrown.
+ */
 export async function discardReplaced(previous: string | null | undefined, current: string, log: Logger): Promise<void> {
   if (!previous || previous === current) return;
   try {

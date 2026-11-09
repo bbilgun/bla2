@@ -1,31 +1,39 @@
+// Divides an expense into exact shares. The app only says how to split ("evenly between A, B and C");
+// the server is the only place this math runs, and the shares always add up to the total.
 import { AppError } from './errors';
 import { cents, MAX_CENTS, type Cents } from './money';
 
-/**
- * How an expense is divided. The server is the only place this math runs;
- * the app sends intent ("split evenly between A, B, C") and gets back exact cents.
- */
+/** How the app asks for an expense to be split. Percentages are basis points: 33.33% is 3333. */
 export type SplitInput =
   | { type: 'EVEN'; userIds: string[] }
   | { type: 'EXACT'; shares: { userId: string; amountCents: number }[] }
   | { type: 'PERCENT'; shares: { userId: string; basisPoints: number }[] };
 
+/** The kind of split, stored on each expense so the app can show how it was entered. */
 export type SplitType = SplitInput['type'];
 
+/** One person's part of an expense. */
 export interface Share {
   userId: string;
   amountCents: Cents;
 }
 
-/** 100% expressed in basis points. 33.33% is 3333. */
+/** 100% in basis points. */
 export const FULL_BASIS_POINTS = 10_000;
 
-/** Plain code-unit ordering. Never localeCompare: the result must not depend on the server's locale. */
+/**
+ * Orders ids by plain code units. localeCompare would make the result depend on the server's
+ * locale, and every tie-break here has to come out the same everywhere.
+ */
 export function compareIds(a: string, b: string): number {
-  return a < b ? -1 : a > b ? 1 : 0;
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
 }
 
-const splitError = (code: string, message: string) => new AppError(400, code, message);
+function splitError(code: string, message: string): AppError {
+  return new AppError(400, code, message);
+}
 
 function assertTotal(total: number): asserts total is Cents {
   if (!Number.isSafeInteger(total) || total < 0 || total > MAX_CENTS) {
@@ -34,19 +42,18 @@ function assertTotal(total: number): asserts total is Cents {
 }
 
 function assertUniqueUsers(userIds: readonly string[]): void {
-  if (userIds.length === 0) throw splitError('SPLIT_EMPTY', 'A split needs at least one person');
+  if (userIds.length === 0) {
+    throw splitError('SPLIT_EMPTY', 'A split needs at least one person');
+  }
   if (new Set(userIds).size !== userIds.length) {
     throw splitError('SPLIT_DUPLICATE_USER', 'Each person can appear in a split only once');
   }
 }
 
 /**
- * Largest remainder (Hamilton) allocation.
- *
- * Each person's exact share is total * weight / totalWeight. We give everyone the floor of that,
- * then hand the leftover cents, one each, to the people with the biggest fractional remainder.
- * Ties go to the smaller user id. Same input, same output, every time, and the shares always
- * add up to exactly `total`.
+ * Splits `total` in proportion to each weight with the largest remainder method. Everyone gets the
+ * rounded-down share, then the leftover cents go one each to the biggest remainders, ties to the
+ * smaller user id. The result is sorted by user id and always adds up to exactly `total`.
  */
 export function largestRemainder(total: Cents, weights: readonly { userId: string; weight: number }[]): Share[] {
   assertTotal(total);
@@ -59,69 +66,79 @@ export function largestRemainder(total: Cents, weights: readonly { userId: strin
     }
     totalWeight += weight;
   }
-  if (totalWeight === 0) throw splitError('INVALID_WEIGHT', 'At least one person must have a share');
+  if (totalWeight === 0) {
+    throw splitError('INVALID_WEIGHT', 'At least one person must have a share');
+  }
 
   const rows = weights.map(({ userId, weight }) => {
     const scaled = total * weight;
-    if (!Number.isSafeInteger(scaled)) throw splitError('INVALID_AMOUNT', 'Amount is too large to split');
-    const remainder = scaled % totalWeight; // exact: both operands are safe integers
-    return { userId, floor: (scaled - remainder) / totalWeight, remainder };
+    if (!Number.isSafeInteger(scaled)) {
+      throw splitError('INVALID_AMOUNT', 'Amount is too large to split');
+    }
+    // Both operands are safe integers, so the remainder is exact.
+    const remainder = scaled % totalWeight;
+    return { userId, amount: (scaled - remainder) / totalWeight, remainder };
   });
 
-  let leftover = total - rows.reduce((acc, r) => acc + r.floor, 0);
+  let leftover = total - rows.reduce((acc, row) => acc + row.amount, 0);
   const byRemainder = [...rows].sort((a, b) => b.remainder - a.remainder || compareIds(a.userId, b.userId));
   for (const row of byRemainder) {
     if (leftover === 0) break;
-    row.floor += 1;
+    row.amount += 1;
     leftover -= 1;
   }
 
   return rows
-    .map((r) => ({ userId: r.userId, amountCents: cents(r.floor) }))
+    .map((row) => ({ userId: row.userId, amountCents: cents(row.amount) }))
     .sort((a, b) => compareIds(a.userId, b.userId));
 }
 
+/** Splits `total` evenly. Shares differ by at most one cent. */
 export function splitEven(total: Cents, userIds: readonly string[]): Share[] {
-  return largestRemainder(
-    total,
-    userIds.map((userId) => ({ userId, weight: 1 })),
-  );
+  const weights = userIds.map((userId) => ({ userId, weight: 1 }));
+  return largestRemainder(total, weights);
 }
 
+/** Splits `total` by percentages given in basis points, which must add up to exactly 100%. */
 export function splitPercent(total: Cents, shares: readonly { userId: string; basisPoints: number }[]): Share[] {
-  for (const s of shares) {
-    if (!Number.isSafeInteger(s.basisPoints) || s.basisPoints < 0 || s.basisPoints > FULL_BASIS_POINTS) {
+  for (const share of shares) {
+    if (!Number.isSafeInteger(share.basisPoints) || share.basisPoints < 0 || share.basisPoints > FULL_BASIS_POINTS) {
       throw splitError('INVALID_PERCENT', 'Each percentage must be between 0.00% and 100.00%');
     }
   }
-  const totalBp = shares.reduce((acc, s) => acc + s.basisPoints, 0);
-  if (totalBp !== FULL_BASIS_POINTS) {
-    throw splitError('SPLIT_PERCENT_MISMATCH', `Percentages must add up to 100.00% (got ${(totalBp / 100).toFixed(2)}%)`);
+
+  const totalBasisPoints = shares.reduce((acc, share) => acc + share.basisPoints, 0);
+  if (totalBasisPoints !== FULL_BASIS_POINTS) {
+    const percent = (totalBasisPoints / 100).toFixed(2);
+    throw splitError('SPLIT_PERCENT_MISMATCH', `Percentages must add up to 100.00% (got ${percent}%)`);
   }
-  return largestRemainder(
-    total,
-    shares.map((s) => ({ userId: s.userId, weight: s.basisPoints })),
-  );
+
+  const weights = shares.map((share) => ({ userId: share.userId, weight: share.basisPoints }));
+  return largestRemainder(total, weights);
 }
 
+/** Checks amounts the app chose itself. They must be whole cents and add up to exactly `total`. */
 export function splitExact(total: Cents, shares: readonly { userId: string; amountCents: number }[]): Share[] {
   assertTotal(total);
-  assertUniqueUsers(shares.map((s) => s.userId));
-  let sum = 0;
-  for (const s of shares) {
-    if (!Number.isSafeInteger(s.amountCents) || s.amountCents < 0) {
+  assertUniqueUsers(shares.map((share) => share.userId));
+
+  let sharesTotal = 0;
+  for (const share of shares) {
+    if (!Number.isSafeInteger(share.amountCents) || share.amountCents < 0) {
       throw splitError('INVALID_AMOUNT', 'Each share must be a non-negative integer number of cents');
     }
-    sum += s.amountCents;
+    sharesTotal += share.amountCents;
   }
-  if (sum !== total) {
-    throw splitError('SPLIT_SUM_MISMATCH', `Shares add up to ${sum} cents but the expense is ${total} cents`);
+  if (sharesTotal !== total) {
+    throw splitError('SPLIT_SUM_MISMATCH', `Shares add up to ${sharesTotal} cents but the expense is ${total} cents`);
   }
+
   return shares
-    .map((s) => ({ userId: s.userId, amountCents: cents(s.amountCents) }))
+    .map((share) => ({ userId: share.userId, amountCents: cents(share.amountCents) }))
     .sort((a, b) => compareIds(a.userId, b.userId));
 }
 
+/** Turns a split request into exact shares, sorted by user id. Throws a 400 AppError for a bad split. */
 export function computeSplit(total: Cents, input: SplitInput): Share[] {
   switch (input.type) {
     case 'EVEN':
@@ -133,7 +150,8 @@ export function computeSplit(total: Cents, input: SplitInput): Share[] {
   }
 }
 
-/** Every user id referenced by a split request. */
+/** Every user id a split request names. */
 export function splitUserIds(input: SplitInput): string[] {
-  return input.type === 'EVEN' ? input.userIds : input.shares.map((s) => s.userId);
+  if (input.type === 'EVEN') return input.userIds;
+  return input.shares.map((share) => share.userId);
 }

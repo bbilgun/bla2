@@ -37,6 +37,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: subosito/flutter-action@v2
         with:
+          # Pinned: a new stable release can add lints or change formatting and fail CI with no code change.
+          # Bump it on purpose, together with your local Flutter.
+          flutter-version: 3.47.8
           channel: stable
           cache: true
       - run: flutter pub get

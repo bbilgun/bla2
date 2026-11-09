@@ -1,0 +1,43 @@
+name: netzero
+description: "A new Flutter project."
+publish_to: 'none'
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.13.7
+
+dependencies:
+  amazon_cognito_identity_dart_2: ^4.0.1
+  dio: ^5.11.1
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  flutter_secure_storage: ^11.2.0
+  get: ^4.7.3
+  image_picker: ^1.2.4
+  qr_flutter: ^4.1.0
+  share_plus: ^13.3.1
+  uuid: ^4.6.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.14.4
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/brand/mark.png
+
+# App icons, rendered from lib/app/brand.dart by tool/brand_assets_test.dart:
+#   flutter test tool/brand_assets_test.dart && dart run flutter_launcher_icons
+flutter_launcher_icons:
+  ios: true
+  android: true
+  image_path: assets/brand/icon.png
+  remove_alpha_ios: true
+  adaptive_icon_background: "#00885A"
+  adaptive_icon_foreground: assets/brand/icon-foreground.png
+  min_sdk_android: 24

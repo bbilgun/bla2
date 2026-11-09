@@ -1,0 +1,12 @@
+.DS_Store
+.idea/
+.vscode/
+*.log
+
+# backend
+backend/node_modules/
+backend/.serverless/
+backend/.esbuild/
+backend/coverage/
+.env
+.env.*

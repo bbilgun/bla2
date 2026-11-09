@@ -1,0 +1,163 @@
+# NetZero API — Serverless Framework v4
+#
+#   phone -> API Gateway (HTTP API + Cognito JWT authorizer) -> Lambda (Node 22) -> MongoDB Atlas
+#   phone -> S3 (presigned URL that Lambda signed)           -> receipts bucket
+#
+# Deploy:  npx serverless deploy --stage dev      (see ../README.md for first-time setup)
+# Logs:    npx serverless logs -f createExpense --stage dev --tail
+
+org: bilguuna117
+service: netzero
+
+provider:
+  name: aws
+  runtime: nodejs22.x
+  architecture: arm64
+  region: ap-northeast-1
+  stage: ${opt:stage, 'dev'}
+  # Lambda CPU scales with memory. Cold starts are CPU-bound (loading the bundle, the TLS + SCRAM
+  # handshake to Atlas), so 1024 MB roughly halves them; billed per GB-second, the cost barely moves.
+  memorySize: 1024
+  timeout: 10
+  logRetentionInDays: 14
+  environment:
+    STAGE: ${sls:stage}
+    # Stored in SSM Parameter Store, never in the repo:
+    #   aws ssm put-parameter --name /netzero/dev/mongodb-uri --type SecureString --value 'mongodb+srv://...'
+    MONGODB_URI: ${ssm:/netzero/${sls:stage}/mongodb-uri}
+    MONGODB_DB: netzero_${sls:stage}
+    RECEIPTS_BUCKET: !Ref ReceiptsBucket
+  httpApi:
+    authorizers:
+      cognito:
+        type: jwt
+        identitySource: $request.header.Authorization
+        issuerUrl: !Join ['', ['https://cognito-idp.', '${aws:region}', '.amazonaws.com/', !Ref UserPool]]
+        audience:
+          - !Ref UserPoolClient
+  iam:
+    role:
+      statements:
+        # Lambda only signs URLs; the signature is only valid for actions this role may perform.
+        - Effect: Allow
+          Action: [s3:PutObject, s3:GetObject]
+          Resource:
+            - !Join ['', [!GetAtt ReceiptsBucket.Arn, '/groups/*']]
+            - !Join ['', [!GetAtt ReceiptsBucket.Arn, '/users/*']]
+
+build:
+  esbuild:
+    bundle: true
+    # Not minified, so stack traces in CloudWatch stay readable without source maps.
+    # (--enable-source-maps added ~30% to module load time.)
+    minify: false
+    sourcemap: false
+    # By default v4 leaves @aws-sdk/* out of the bundle and relies on the Lambda runtime copy.
+    # An explicit (empty) exclude list bundles our pinned SDK, including s3-request-presigner.
+    exclude: []
+
+functions:
+  # One function serves every route. API Gateway still routes and checks the Cognito JWT per route
+  # (the events below); src/handlers/api.ts picks the handler by routeKey. One function means one
+  # cold start for the whole app instead of one per route, and one MongoDB pool shared by all routes.
+  api:
+    handler: src/handlers/api.handler
+    events:
+      - httpApi: { method: GET, path: /health }
+      - httpApi: { method: GET, path: /me, authorizer: { name: cognito } }
+      - httpApi: { method: POST, path: /groups, authorizer: { name: cognito } }
+      - httpApi: { method: GET, path: /groups, authorizer: { name: cognito } }
+      - httpApi: { method: GET, path: '/groups/{groupId}', authorizer: { name: cognito } }
+      - httpApi: { method: POST, path: '/groups/{groupId}/members', authorizer: { name: cognito } }
+      - httpApi: { method: POST, path: '/groups/{groupId}/expenses', authorizer: { name: cognito } }
+      - httpApi: { method: GET, path: '/groups/{groupId}/expenses', authorizer: { name: cognito } }
+      - httpApi: { method: POST, path: '/groups/{groupId}/settlements', authorizer: { name: cognito } }
+      - httpApi: { method: GET, path: '/groups/{groupId}/settlements', authorizer: { name: cognito } }
+      - httpApi: { method: GET, path: '/groups/{groupId}/balances', authorizer: { name: cognito } }
+      - httpApi: { method: POST, path: '/groups/{groupId}/expenses/{expenseId}/receipt-url', authorizer: { name: cognito } }
+      - httpApi: { method: GET, path: '/groups/{groupId}/expenses/{expenseId}/receipt-url', authorizer: { name: cognito } }
+      - httpApi: { method: POST, path: /bills, authorizer: { name: cognito } }
+      - httpApi: { method: GET, path: /bills, authorizer: { name: cognito } }
+      - httpApi: { method: GET, path: '/bills/{billId}', authorizer: { name: cognito } }
+      - httpApi: { method: PUT, path: '/bills/{billId}', authorizer: { name: cognito } }
+      - httpApi: { method: POST, path: '/bills/{billId}/status', authorizer: { name: cognito } }
+      - httpApi: { method: PUT, path: '/bills/{billId}/guests/{guestId}', authorizer: { name: cognito } }
+      - httpApi: { method: DELETE, path: '/bills/{billId}/guests/{guestId}', authorizer: { name: cognito } }
+      - httpApi: { method: POST, path: /me/pay-qr-url, authorizer: { name: cognito } }
+      - httpApi: { method: GET, path: '/b/{token}' }
+      - httpApi: { method: GET, path: '/b/{token}/data' }
+      - httpApi: { method: POST, path: '/b/{token}/guests' }
+      - httpApi: { method: PUT, path: '/b/{token}/guests/{guestId}' }
+
+resources:
+  Resources:
+    UserPool:
+      Type: AWS::Cognito::UserPool
+      Properties:
+        UserPoolName: netzero-${sls:stage}
+        UsernameAttributes: [email]
+        AutoVerifiedAttributes: [email]
+        # The sign-up code email, in Mongolian like the app. {####} is where Cognito puts the code.
+        VerificationMessageTemplate:
+          DefaultEmailOption: CONFIRM_WITH_CODE
+          EmailSubject: 'NetZero баталгаажуулах код'
+          EmailMessage: 'Сайн байна уу! Таны NetZero баталгаажуулах код: {####}. Энэ кодыг аппад оруулна уу.'
+        Schema:
+          - Name: name
+            AttributeDataType: String
+            Mutable: true
+            Required: true
+        Policies:
+          PasswordPolicy:
+            MinimumLength: 8
+            RequireLowercase: true
+            RequireNumbers: true
+            RequireUppercase: false
+            RequireSymbols: false
+        AccountRecoverySetting:
+          RecoveryMechanisms:
+            - { Name: verified_email, Priority: 1 }
+
+    UserPoolClient:
+      Type: AWS::Cognito::UserPoolClient
+      Properties:
+        ClientName: netzero-mobile-${sls:stage}
+        UserPoolId: !Ref UserPool
+        GenerateSecret: false # public mobile client: a secret in an app binary isn't secret
+        ExplicitAuthFlows:
+          - ALLOW_USER_SRP_AUTH # what the Flutter app uses
+          - ALLOW_USER_PASSWORD_AUTH # lets scripts/get-token.sh fetch a token for curl
+          - ALLOW_REFRESH_TOKEN_AUTH
+        PreventUserExistenceErrors: ENABLED
+        IdTokenValidity: 60
+        AccessTokenValidity: 60
+        RefreshTokenValidity: 30
+        TokenValidityUnits:
+          IdToken: minutes
+          AccessToken: minutes
+          RefreshToken: days
+
+    ReceiptsBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        PublicAccessBlockConfiguration:
+          BlockPublicAcls: true
+          BlockPublicPolicy: true
+          IgnorePublicAcls: true
+          RestrictPublicBuckets: true
+        BucketEncryption:
+          ServerSideEncryptionConfiguration:
+            - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+        LifecycleConfiguration:
+          Rules:
+            - Id: abort-incomplete-uploads
+              Status: Enabled
+              AbortIncompleteMultipartUpload: { DaysAfterInitiation: 1 }
+
+  Outputs:
+    UserPoolId:
+      Value: !Ref UserPool
+    UserPoolClientId:
+      Value: !Ref UserPoolClient
+    ReceiptsBucketName:
+      Value: !Ref ReceiptsBucket

@@ -9,8 +9,16 @@ import 'package:netzero/models/models.dart';
 import 'package:netzero/repositories/repositories.dart';
 import 'package:netzero/services/api_client.dart';
 
+import 'fakes.dart' show recordNotifications;
+
 /// The bill JSON the server sends (shape from backend/src/services/bills.ts).
-Map<String, dynamic> billJson({String status = 'OPEN', List<String> hostItems = const ['i1']}) => {
+Map<String, dynamic> billJson({
+  String status = 'OPEN',
+  List<String> hostItems = const ['i1'],
+  String updatedAt = '2026-11-05T10:00:00.000Z',
+  int guestPaidCents = 1500000,
+  int guestTotalCents = 1500000,
+}) => {
   'id': 'b1',
   'code': '7KQ2HM',
   'title': 'Оройн хоол',
@@ -28,14 +36,25 @@ Map<String, dynamic> billJson({String status = 'OPEN', List<String> hostItems = 
     {'id': 'i2', 'name': 'Кола', 'priceCents': 450000, 'claimedBy': <String>[], 'shares': <String, int>{}},
   ],
   'guests': [
-    {'id': 'host', 'name': 'Билгүүн', 'isHost': true, 'paid': false, 'itemIds': hostItems, 'totalCents': 1500000},
+    {
+      'id': 'host',
+      'name': 'Билгүүн',
+      'isHost': true,
+      'paid': false,
+      'itemIds': hostItems,
+      'totalCents': 1500000,
+      'paidCents': 0,
+      'dueCents': 1500000,
+    },
     {
       'id': 'g1',
       'name': 'Бат',
       'isHost': false,
-      'paid': true,
+      'paid': guestPaidCents > 0 && guestTotalCents - guestPaidCents <= 0,
       'itemIds': ['i1'],
-      'totalCents': 1500000,
+      'totalCents': guestTotalCents,
+      'paidCents': guestPaidCents,
+      'dueCents': guestTotalCents - guestPaidCents,
     },
   ],
   'totalCents': 3450000,
@@ -46,7 +65,7 @@ Map<String, dynamic> billJson({String status = 'OPEN', List<String> hostItems = 
   'payment': {'bankName': 'Хаан банк', 'accountNumber': '5000123456', 'accountName': 'Билгүүн'},
   'hasPayQr': false,
   'createdAt': '2026-11-05T10:00:00.000Z',
-  'updatedAt': '2026-11-05T10:00:00.000Z',
+  'updatedAt': updatedAt,
   'token': 'tok',
   'url': 'https://api.example/b/tok',
 };
@@ -85,13 +104,18 @@ class SlowBills implements BillsRepository {
 
   void releaseNext() => _gates.removeAt(0).complete();
 
+  /// When set, every updateGuest fails with it once released.
+  ApiException? failWith;
+
   @override
-  Future<Bill> updateGuest(String id, String guestId, {List<String>? itemIds, bool? paid}) async {
+  Future<Bill> updateGuest(String id, String guestId, {List<String>? itemIds, bool? paid, int? paidCents}) async {
     final ids = [...?itemIds]..sort();
     sent.add(ids);
     final gate = Completer<void>();
     _gates.add(gate);
     await gate.future;
+    final error = failWith;
+    if (error != null) throw error;
     return Bill.fromJson(billJson(hostItems: ids));
   }
 
@@ -119,7 +143,23 @@ BillEditorController editor(FakeBills bills, {Bill? existing}) {
 }
 
 void main() {
-  setUp(() => Get.testMode = true);
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  setUp(() {
+    Get.testMode = true;
+    recordNotifications();
+  });
+
+  test('a guest who paid and then ticked more: the server says how much is still due', () {
+    final guest = Bill.fromJson(billJson(guestPaidCents: 1000000, guestTotalCents: 1500000)).others.single;
+    expect(guest.paid, isFalse);
+    expect(guest.paidCents, 1000000);
+    expect(guest.dueCents, 500000);
+    expect(guest.paidDiffers, isTrue);
+    final overpaid = Bill.fromJson(billJson(guestPaidCents: 2000000)).others.single;
+    expect(overpaid.dueCents, -500000);
+    expect(overpaid.paid, isTrue);
+  });
 
   test('Bill.fromJson: integer amounts, host, names', () {
     final bill = Bill.fromJson(billJson());
@@ -230,4 +270,47 @@ void main() {
     expect(c.pendingMine.value, isNull);
     expect(c.bill.value!.host.itemIds, isEmpty);
   });
+}
+
+/// get() answers from a queue of held responses; writes answer at once.
+class PollingBills implements BillsRepository {
+  final _gets = <Completer<Bill>>[];
+  int getCalls = 0;
+  final paidCalls = <({String guestId, bool? paid, int? paidCents})>[];
+  Object? failDelete;
+  int deletes = 0;
+
+  /// Answers the oldest get() still waiting.
+  void answerGet(Bill bill) => _gets.removeAt(0).complete(bill);
+
+  @override
+  Future<Bill> get(String id) {
+    getCalls++;
+    final c = Completer<Bill>();
+    _gets.add(c);
+    return c.future;
+  }
+
+  @override
+  Future<Bill> updateGuest(String id, String guestId, {List<String>? itemIds, bool? paid, int? paidCents}) async {
+    paidCalls.add((guestId: guestId, paid: paid, paidCents: paidCents));
+    return Bill.fromJson(billJson(updatedAt: '2026-11-05T10:05:00.000Z', guestPaidCents: paidCents ?? 0));
+  }
+
+  @override
+  Future<Bill> rotateToken(String id) async =>
+      Bill.fromJson({...billJson(), 'token': 'tok2', 'url': 'https://api.example/b/tok2'});
+
+  @override
+  Future<void> delete(String id) async {
+    deletes++;
+    final error = failDelete;
+    if (error != null) {
+      failDelete = null;
+      throw error;
+    }
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => throw UnimplementedError();
 }

@@ -1,5 +1,9 @@
-import 'package:flutter/material.dart';
+import 'dart:async';
 
+import 'package:flutter/material.dart';
+import 'package:get/get.dart';
+
+import '../app/routes.dart';
 import '../app/strings.dart';
 import '../app/theme.dart';
 import '../domain/money.dart';
@@ -198,3 +202,265 @@ class InlineError extends StatelessWidget {
 
 /// "11-р сарын 5"
 String shortDate(DateTime d) => S.date(d);
+
+/// An empty state that still pulls to refresh: a RefreshIndicator needs something scrollable under it.
+class ScrollableEmpty extends StatelessWidget {
+  const ScrollableEmpty({super.key, required this.child, this.header = const []});
+
+  final Widget child;
+
+  /// Shown above the empty state (e.g. pending invites).
+  final List<Widget> header;
+
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, constraints) => ListView(
+      physics: const AlwaysScrollableScrollPhysics(),
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 96),
+      children: [
+        ...header,
+        ConstrainedBox(
+          constraints: BoxConstraints(minHeight: header.isEmpty ? constraints.maxHeight * 0.7 : 0),
+          child: Center(child: child),
+        ),
+      ],
+    ),
+  );
+}
+
+/// The end of a paged list: a spinner while the next page loads, a "load more" button when there's
+/// more (always shown after a failure, since the list stops loading by itself then), else nothing.
+class LoadMoreFooter extends StatelessWidget {
+  const LoadMoreFooter({super.key, required this.hasMore, required this.loading, required this.onLoadMore});
+
+  final bool hasMore;
+  final bool loading;
+  final VoidCallback onLoadMore;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!hasMore) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Center(
+        child: loading
+            ? const SizedBox.square(dimension: 28, child: CircularProgressIndicator(strokeWidth: 2.5))
+            : TextButton(onPressed: onLoadMore, child: const Text(S.loadMore)),
+      ),
+    );
+  }
+}
+
+/// The avatar in the main pages' app bars: opens the profile page (sign out, delete account).
+class AccountButton extends StatelessWidget {
+  const AccountButton({super.key, this.name});
+
+  final String? name;
+
+  @override
+  Widget build(BuildContext context) {
+    final n = name;
+    return IconButton(
+      tooltip: S.account,
+      onPressed: () => unawaited(Get.toNamed<void>(Routes.account)),
+      icon: n == null ? const Icon(Icons.account_circle_outlined) : Initials(n, radius: 15),
+    );
+  }
+}
+
+/// Tells [onCovered] when another page is pushed on top of this one, and [onUncovered] when it's
+/// back on top. Dialogs and sheets don't count.
+class RouteVisibility extends StatefulWidget {
+  const RouteVisibility({super.key, required this.child, this.onCovered, this.onUncovered});
+
+  final Widget child;
+  final VoidCallback? onCovered;
+  final VoidCallback? onUncovered;
+
+  @override
+  State<RouteVisibility> createState() => _RouteVisibilityState();
+}
+
+class _RouteVisibilityState extends State<RouteVisibility> with RouteAware {
+  PageRoute<dynamic>? _route;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final route = ModalRoute.of(context);
+    if (route is PageRoute<dynamic> && route != _route) {
+      if (_route != null) routeObserver.unsubscribe(this);
+      _route = route;
+      routeObserver.subscribe(this, route);
+    }
+  }
+
+  @override
+  void dispose() {
+    routeObserver.unsubscribe(this);
+    super.dispose();
+  }
+
+  @override
+  void didPushNext() => widget.onCovered?.call();
+
+  @override
+  void didPopNext() => widget.onUncovered?.call();
+
+  @override
+  Widget build(BuildContext context) => widget.child;
+}
+
+/// Asks before doing something that can't be undone. True if confirmed.
+Future<bool> confirmAction(
+  BuildContext context, {
+  required String title,
+  required String message,
+  required String confirmLabel,
+  String cancelLabel = S.cancel,
+  bool destructive = true,
+}) async {
+  final scheme = Theme.of(context).colorScheme;
+  final ok = await showDialog<bool>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: Text(title),
+      content: Text(message),
+      actions: [
+        TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: Text(cancelLabel)),
+        FilledButton(
+          style: destructive
+              ? FilledButton.styleFrom(backgroundColor: scheme.error, foregroundColor: scheme.onError)
+              : null,
+          onPressed: () => Navigator.of(ctx).pop(true),
+          child: Text(confirmLabel),
+        ),
+      ],
+    ),
+  );
+  return ok ?? false;
+}
+
+/// A message the person has to acknowledge.
+Future<void> showMessage(BuildContext context, {required String title, required String message}) => showDialog<void>(
+  context: context,
+  builder: (ctx) => AlertDialog(
+    title: Text(title),
+    content: Text(message),
+    actions: [FilledButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text(S.ok))],
+  ),
+);
+
+/// "Discard your changes?" when leaving a form with unsaved edits. True to leave.
+Future<bool> confirmDiscard(BuildContext context) => confirmAction(
+  context,
+  title: S.discardChangesTitle,
+  message: S.discardChangesBody,
+  confirmLabel: S.discard,
+  cancelLabel: S.keepEditing,
+);
+
+/// Blocks the back button and swipe while [saving], and asks before throwing away unsaved changes.
+class FormPopScope extends StatelessWidget {
+  const FormPopScope({super.key, required this.saving, required this.isDirty, required this.child});
+
+  final bool Function() saving;
+  final bool Function() isDirty;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => PopScope<Object?>(
+    canPop: false,
+    onPopInvokedWithResult: (didPop, _) async {
+      if (didPop || saving()) return;
+      if (isDirty() && !await confirmDiscard(context)) return;
+      if (context.mounted) Navigator.of(context).pop();
+    },
+    child: child,
+  );
+}
+
+/// One text field in a dialog, e.g. "invite by email" or "rename". [onSubmit] returns an error to
+/// show under the field, or null to close. Owns (and disposes) its text controller.
+class TextPromptDialog extends StatefulWidget {
+  const TextPromptDialog({
+    super.key,
+    required this.title,
+    required this.label,
+    required this.submitLabel,
+    required this.onSubmit,
+    this.initial = '',
+    this.helper,
+    this.keyboardType,
+    this.capitalization = TextCapitalization.none,
+  });
+
+  final String title;
+  final String label;
+  final String submitLabel;
+  final Future<String?> Function(String value) onSubmit;
+  final String initial;
+  final String? helper;
+  final TextInputType? keyboardType;
+  final TextCapitalization capitalization;
+
+  @override
+  State<TextPromptDialog> createState() => _TextPromptDialogState();
+}
+
+class _TextPromptDialogState extends State<TextPromptDialog> {
+  late final _text = TextEditingController(text: widget.initial);
+  String? _error;
+  var _saving = false;
+
+  @override
+  void dispose() {
+    _text.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    if (_saving) return;
+    setState(() {
+      _saving = true;
+      _error = null;
+    });
+    final message = await widget.onSubmit(_text.text);
+    if (!mounted) return;
+    if (message == null) {
+      Navigator.of(context).pop();
+    } else {
+      setState(() {
+        _saving = false;
+        _error = message;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: Text(widget.title),
+    content: TextField(
+      controller: _text,
+      autofocus: true,
+      keyboardType: widget.keyboardType,
+      textCapitalization: widget.capitalization,
+      decoration: InputDecoration(
+        labelText: widget.label,
+        helperText: widget.helper,
+        helperMaxLines: 3,
+        errorText: _error,
+        errorMaxLines: 3,
+      ),
+      onSubmitted: (_) => unawaited(_submit()),
+    ),
+    actions: [
+      TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text(S.cancel)),
+      FilledButton(
+        style: FilledButton.styleFrom(minimumSize: const Size(88, 40)),
+        onPressed: _saving ? null : () => unawaited(_submit()),
+        child: Text(widget.submitLabel),
+      ),
+    ],
+  );
+}

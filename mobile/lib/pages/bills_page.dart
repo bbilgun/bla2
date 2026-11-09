@@ -1,8 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
 import '../app/strings.dart';
 import '../controllers/bills_controller.dart';
+import '../controllers/groups_controller.dart';
 import '../domain/money.dart';
 import '../models/models.dart';
 import 'widgets.dart';
@@ -13,25 +16,56 @@ class BillsPage extends GetView<BillsController> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text(S.billsTitle)),
+      appBar: AppBar(
+        title: const Text(S.billsTitle),
+        actions: [
+          Obx(
+            () => AccountButton(
+              name: Get.isRegistered<GroupsController>() ? Get.find<GroupsController>().me.value?.name : null,
+            ),
+          ),
+          const SizedBox(width: 8),
+        ],
+      ),
       floatingActionButton: FloatingActionButton.extended(
         heroTag: 'new-bill',
-        onPressed: controller.create,
+        onPressed: () => unawaited(controller.create()),
         icon: const Icon(Icons.add),
         label: const Text(S.newBill),
       ),
       body: Obx(() {
         if (controller.loading.value) return const SkeletonList();
         final error = controller.error.value;
-        if (error != null) return ErrorRetry(message: error, onRetry: controller.load);
-        if (controller.bills.isEmpty) return const _EmptyBills();
+        if (error != null) return ErrorRetry(message: error, onRetry: controller.retry);
+        final bills = controller.bills;
+        if (bills.isEmpty) {
+          return RefreshIndicator(
+            onRefresh: controller.load,
+            child: const ScrollableEmpty(child: _EmptyBills()),
+          );
+        }
+        final list = controller.list;
+        final autoLoad = list.shouldAutoLoad;
         return RefreshIndicator(
           onRefresh: controller.load,
           child: ListView.separated(
+            physics: const AlwaysScrollableScrollPhysics(),
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 96),
-            itemCount: controller.bills.length,
+            itemCount: bills.length + 1,
             separatorBuilder: (_, _) => const SizedBox(height: 10),
-            itemBuilder: (_, i) => _BillTile(controller.bills[i], onTap: controller.open),
+            itemBuilder: (_, i) {
+              if (i == bills.length) {
+                return LoadMoreFooter(
+                  hasMore: list.hasMore,
+                  loading: list.loadingMore,
+                  onLoadMore: () => unawaited(controller.loadMore()),
+                );
+              }
+              if (autoLoad && i == bills.length - 1) {
+                WidgetsBinding.instance.addPostFrameCallback((_) => unawaited(controller.loadMore()));
+              }
+              return _BillTile(bills[i], onTap: (id) => unawaited(controller.open(id)));
+            },
           ),
         );
       }),

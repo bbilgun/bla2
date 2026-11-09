@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
 import '../app/brand.dart';
+import '../app/notify.dart';
 import '../app/routes.dart';
 import '../app/strings.dart';
 import '../app/theme.dart';
@@ -10,8 +13,63 @@ import '../domain/money.dart';
 import '../models/models.dart';
 import 'widgets.dart';
 
+enum _GroupAction { members, rename, leave, delete }
+
 class GroupDetailPage extends GetView<GroupDetailController> {
   const GroupDetailPage({super.key});
+
+  /// Whatever happened on the add-expense page (saved, backed out, offline), the list is refetched:
+  /// a save whose answer was lost may still have gone through.
+  Future<void> _addExpense() async {
+    await Get.toNamed<Object?>(Routes.addExpensePath(controller.groupId));
+    await controller.refreshAfterWrite();
+  }
+
+  Future<void> _onAction(BuildContext context, _GroupAction action) async {
+    final group = controller.group.value;
+    if (group == null) return;
+    switch (action) {
+      case _GroupAction.members:
+        await showModalBottomSheet<void>(
+          context: context,
+          isScrollControlled: true,
+          showDragHandle: true,
+          builder: (_) => _MembersSheet(controller: controller),
+        );
+      case _GroupAction.rename:
+        await showDialog<void>(
+          context: context,
+          builder: (_) => TextPromptDialog(
+            title: S.renameGroup,
+            label: S.groupName,
+            submitLabel: S.save,
+            initial: group.name,
+            capitalization: TextCapitalization.sentences,
+            onSubmit: controller.rename,
+          ),
+        );
+      case _GroupAction.leave:
+        final ok = await confirmAction(
+          context,
+          title: S.leaveGroup,
+          message: S.leaveGroupQuestion,
+          confirmLabel: S.leaveGroup,
+        );
+        if (!ok) return;
+        final message = await controller.leave();
+        if (message != null && context.mounted) await showMessage(context, title: S.leaveGroup, message: message);
+      case _GroupAction.delete:
+        final ok = await confirmAction(
+          context,
+          title: S.deleteGroup,
+          message: S.deleteGroupQuestion,
+          confirmLabel: S.delete,
+        );
+        if (!ok) return;
+        final message = await controller.deleteGroup();
+        if (message != null && context.mounted) await showMessage(context, title: S.deleteGroup, message: message);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -20,9 +78,18 @@ class GroupDetailPage extends GetView<GroupDetailController> {
         title: Obx(() => Text(controller.group.value?.name ?? '')),
         actions: [
           IconButton(
-            tooltip: S.addMember,
+            tooltip: S.inviteByEmail,
             icon: const Icon(Icons.person_add_alt_1_outlined),
-            onPressed: () => _showAddMember(context),
+            onPressed: () => unawaited(showInviteDialog(context, controller)),
+          ),
+          PopupMenuButton<_GroupAction>(
+            onSelected: (a) => unawaited(_onAction(context, a)),
+            itemBuilder: (_) => const [
+              PopupMenuItem(value: _GroupAction.members, child: Text(S.members)),
+              PopupMenuItem(value: _GroupAction.rename, child: Text(S.renameGroup)),
+              PopupMenuItem(value: _GroupAction.leave, child: Text(S.leaveGroup)),
+              PopupMenuItem(value: _GroupAction.delete, child: Text(S.deleteGroup)),
+            ],
           ),
         ],
       ),
@@ -30,10 +97,7 @@ class GroupDetailPage extends GetView<GroupDetailController> {
         () => controller.group.value == null
             ? const SizedBox.shrink()
             : FloatingActionButton.extended(
-                onPressed: () async {
-                  final added = await Get.toNamed(Routes.addExpensePath(controller.groupId));
-                  if (added == true) await controller.refreshAfterWrite();
-                },
+                onPressed: () => unawaited(_addExpense()),
                 icon: const Icon(Icons.add),
                 label: const Text(S.addExpense),
               ),
@@ -43,16 +107,17 @@ class GroupDetailPage extends GetView<GroupDetailController> {
         final error = controller.error.value;
         final group = controller.group.value;
         if (error != null || group == null) {
-          return ErrorRetry(message: error ?? S.couldNotLoadGroup, onRetry: controller.load);
+          return ErrorRetry(message: error ?? S.couldNotLoadGroup, onRetry: controller.retry);
         }
         final expenses = controller.expenses;
-        final hasMore = controller.hasMore;
-        final loadingMore = controller.loadingMore.value;
+        // After a failed page this stays false until "load more" is tapped: no retry loop.
+        final autoLoad = controller.shouldAutoLoad;
         return RefreshIndicator(
-          onRefresh: controller.refreshAfterWrite,
+          onRefresh: controller.refreshAll,
           // Slivers: expense rows are built lazily as they scroll into view, so a group with hundreds of
           // expenses opens as fast as one with five. The next page loads on its own near the bottom.
           child: CustomScrollView(
+            physics: const AlwaysScrollableScrollPhysics(),
             slivers: [
               SliverPadding(
                 padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
@@ -61,6 +126,10 @@ class GroupDetailPage extends GetView<GroupDetailController> {
                     _BalanceHero(controller: controller),
                     const SizedBox(height: 12),
                     _MemberBalances(controller: controller),
+                    if (group.invites.isNotEmpty) ...[
+                      const SizedBox(height: 12),
+                      _PendingInvites(controller: controller, invites: group.invites),
+                    ],
                     const SizedBox(height: 28),
                     const SectionTitle(S.expenses),
                     if (expenses.isEmpty)
@@ -77,8 +146,8 @@ class GroupDetailPage extends GetView<GroupDetailController> {
                   itemCount: expenses.length,
                   separatorBuilder: (_, _) => const SizedBox(height: 8),
                   itemBuilder: (_, i) {
-                    if (hasMore && i == expenses.length - 1) {
-                      WidgetsBinding.instance.addPostFrameCallback((_) => controller.loadMore());
+                    if (autoLoad && i == expenses.length - 1) {
+                      WidgetsBinding.instance.addPostFrameCallback((_) => unawaited(controller.loadMore()));
                     }
                     return _ExpenseTile(expense: expenses[i], group: group, me: controller.myUserId);
                   },
@@ -87,13 +156,11 @@ class GroupDetailPage extends GetView<GroupDetailController> {
               SliverPadding(
                 padding: const EdgeInsets.fromLTRB(16, 12, 16, 104),
                 sliver: SliverToBoxAdapter(
-                  child: !hasMore
-                      ? const SizedBox.shrink()
-                      : Center(
-                          child: loadingMore
-                              ? const SizedBox.square(dimension: 28, child: CircularProgressIndicator(strokeWidth: 2.5))
-                              : TextButton(onPressed: controller.loadMore, child: const Text(S.loadMore)),
-                        ),
+                  child: LoadMoreFooter(
+                    hasMore: controller.hasMore,
+                    loading: controller.loadingMore,
+                    onLoadMore: () => unawaited(controller.loadMore()),
+                  ),
                 ),
               ),
             ],
@@ -102,58 +169,140 @@ class GroupDetailPage extends GetView<GroupDetailController> {
       }),
     );
   }
+}
 
-  Future<void> _showAddMember(BuildContext context) async {
-    final email = TextEditingController();
-    String? error;
-    var saving = false;
-    await showDialog<void>(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setState) {
-          Future<void> submit() async {
-            setState(() {
-              saving = true;
-              error = null;
-            });
-            final message = await controller.addMember(email.text);
-            if (!ctx.mounted) return;
-            if (message == null) {
-              Navigator.of(ctx).pop();
-            } else {
-              setState(() {
-                saving = false;
-                error = message;
-              });
-            }
-          }
+/// "Invite by email": the person sees the invite once they sign in with that address.
+Future<void> showInviteDialog(BuildContext context, GroupDetailController controller) => showDialog<void>(
+  context: context,
+  builder: (_) => TextPromptDialog(
+    title: S.inviteByEmail,
+    label: S.memberEmail,
+    helper: S.inviteHelper,
+    submitLabel: S.invite,
+    keyboardType: TextInputType.emailAddress,
+    onSubmit: (email) async {
+      final message = await controller.invite(email);
+      if (message == null) notify(S.inviteSent(email.trim()));
+      return message;
+    },
+  ),
+);
 
-          return AlertDialog(
-            title: const Text(S.addMember),
-            content: TextField(
-              controller: email,
-              autofocus: true,
-              keyboardType: TextInputType.emailAddress,
-              decoration: InputDecoration(
-                labelText: S.memberEmail,
-                helperText: S.addMemberHelper,
-                helperMaxLines: 2,
-                errorText: error,
-                errorMaxLines: 3,
-              ),
-              onSubmitted: (_) => submit(),
+/// Invited people who haven't joined yet, each with "cancel".
+class _PendingInvites extends StatelessWidget {
+  const _PendingInvites({required this.controller, required this.invites});
+
+  final GroupDetailController controller;
+  final List<GroupInvite> invites;
+
+  @override
+  Widget build(BuildContext context) {
+    final text = Theme.of(context).textTheme;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+              child: Text(S.pendingInvites, style: text.titleSmall),
             ),
-            actions: [
-              TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text(S.cancel)),
-              FilledButton(
-                style: FilledButton.styleFrom(minimumSize: const Size(88, 40)),
-                onPressed: saving ? null : submit,
-                child: const Text(S.add),
-              ),
-            ],
-          );
-        },
+            for (final invite in invites) _InviteRow(controller: controller, invite: invite),
+          ],
+        ),
       ),
+    );
+  }
+}
+
+class _InviteRow extends StatelessWidget {
+  const _InviteRow({required this.controller, required this.invite});
+
+  final GroupDetailController controller;
+  final GroupInvite invite;
+
+  @override
+  Widget build(BuildContext context) => ListTile(
+    dense: true,
+    leading: const Icon(Icons.mail_outline),
+    title: Text(invite.email),
+    subtitle: Text(shortDate(invite.createdAt)),
+    trailing: IconButton(
+      tooltip: S.cancelInvite,
+      icon: const Icon(Icons.close),
+      onPressed: () async {
+        final message = await controller.cancelInvite(invite);
+        if (message != null) notify(S.actionFailed, message);
+      },
+    ),
+  );
+}
+
+/// Members (remove someone else) and pending invites (cancel), from the menu.
+class _MembersSheet extends StatelessWidget {
+  const _MembersSheet({required this.controller});
+
+  final GroupDetailController controller;
+
+  Future<void> _remove(BuildContext context, Member m) async {
+    final ok = await confirmAction(
+      context,
+      title: S.removeMember,
+      message: S.removeMemberQuestion(m.name),
+      confirmLabel: S.removeMember,
+    );
+    if (!ok) return;
+    final message = await controller.removeMember(m);
+    if (message != null && context.mounted) await showMessage(context, title: S.removeMember, message: message);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final text = Theme.of(context).textTheme;
+    return SafeArea(
+      child: Obx(() {
+        final group = controller.group.value;
+        if (group == null) return const SizedBox.shrink();
+        return ListView(
+          shrinkWrap: true,
+          padding: const EdgeInsets.fromLTRB(8, 0, 8, 16),
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+              child: Text(S.members, style: text.titleLarge),
+            ),
+            for (final m in group.members)
+              ListTile(
+                leading: Initials(m.name, radius: 16),
+                title: Text(m.userId == controller.myUserId ? S.youSuffix(m.name) : m.name),
+                subtitle: Text(m.email),
+                trailing: m.userId == controller.myUserId
+                    ? null
+                    : IconButton(
+                        tooltip: S.removeMember,
+                        icon: const Icon(Icons.person_remove_outlined),
+                        onPressed: () => unawaited(_remove(context, m)),
+                      ),
+              ),
+            if (group.invites.isNotEmpty) ...[
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+                child: Text(S.pendingInvites, style: text.titleSmall),
+              ),
+              for (final invite in group.invites) _InviteRow(controller: controller, invite: invite),
+            ],
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+              child: OutlinedButton.icon(
+                onPressed: () => unawaited(showInviteDialog(context, controller)),
+                icon: const Icon(Icons.person_add_alt_1_outlined),
+                label: const Text(S.inviteByEmail),
+              ),
+            ),
+          ],
+        );
+      }),
     );
   }
 }
@@ -219,8 +368,9 @@ class _BalanceHero extends StatelessWidget {
                     disabledBackgroundColor: fg.withValues(alpha: 0.14),
                     disabledForegroundColor: fg.withValues(alpha: 0.7),
                   ),
-                  onPressed: controller.isSettled ? null : () => Get.toNamed(Routes.settleUpPath(controller.groupId)),
-                  child: Text(controller.isSettled ? S.nothingToSettle : S.settleUp),
+                  // Settled: still opens, for the history of recorded payments (and deleting a mistaken one).
+                  onPressed: () => unawaited(Get.toNamed<void>(Routes.settleUpPath(controller.groupId))),
+                  child: Text(controller.isSettled ? S.paymentHistory : S.settleUp),
                 ),
               ],
             ),
@@ -306,7 +456,7 @@ class _ExpenseTile extends StatelessWidget {
     return Card(
       clipBehavior: Clip.antiAlias,
       child: InkWell(
-        onTap: () => Get.toNamed(Routes.expensePath(group.id, expense.id)),
+        onTap: () => unawaited(Get.toNamed<void>(Routes.expensePath(group.id, expense.id))),
         child: Padding(
           padding: const EdgeInsets.fromLTRB(12, 12, 16, 12),
           child: Row(

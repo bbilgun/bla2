@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/widgets.dart';
@@ -10,6 +11,7 @@ import '../domain/money.dart';
 import '../models/models.dart';
 import '../repositories/repositories.dart';
 import '../services/api_client.dart';
+import '../services/photo_picker.dart';
 
 /// One editable line of the receipt. [id] is set for lines that already exist on the server,
 /// so guests keep their ticks on them when the host edits.
@@ -38,16 +40,16 @@ class BillLineForm {
 
 /// Create a bill, or edit one. The server computes every total; this only collects what's on the receipt.
 class BillEditorController extends GetxController {
-  BillEditorController({this.existing, required this._bills, required this._users, Uuid? uuid, ImagePicker? picker})
+  BillEditorController({this.existing, required this._bills, required this._users, Uuid? uuid, PhotoPicker? picker})
     : _uuid = uuid ?? const Uuid(),
-      _picker = picker ?? ImagePicker();
+      _picker = picker ?? PhotoPicker();
 
   /// Null when creating.
   final Bill? existing;
   final BillsRepository _bills;
   final UserRepository _users;
   final Uuid _uuid;
-  final ImagePicker _picker;
+  final PhotoPicker _picker;
 
   bool get isEditing => existing != null;
 
@@ -80,20 +82,50 @@ class BillEditorController extends GetxController {
     if (bill != null) {
       title.text = bill.title;
       currency.value = bill.currency;
-      lines.assignAll(bill.items.map((i) => BillLineForm(id: i.id, name: i.name, price: centsToInput(i.priceCents))));
+      lines.assignAll(
+        bill.items.map(
+          (i) => BillLineForm(
+            id: i.id,
+            name: i.name,
+            price: centsToInput(i.priceCents, currency: bill.currency),
+          ),
+        ),
+      );
       _fillPayment(bill.payment);
     } else {
       lines.assignAll([BillLineForm(), BillLineForm(), BillLineForm()]);
     }
-    _loadProfile();
+    _savedSnapshot = _snapshot();
+    unawaited(_loadProfile());
   }
+
+  // ---- unsaved changes ----
+
+  String _savedSnapshot = '';
+
+  String _snapshot() => jsonEncode({
+    'title': title.text,
+    'currency': currency.value,
+    'lines': [
+      for (final l in lines) [l.name.text, l.price.text],
+    ],
+    'payment': [bank.text, accountNumber.text, accountName.text],
+  });
+
+  /// Something was typed or changed since the form opened: leaving asks first.
+  bool get isDirty => _snapshot() != _savedSnapshot;
 
   /// Pre-fills bank details saved from the last bill, and shows the QR image if there is one.
   Future<void> _loadProfile() async {
     try {
       final me = await _users.me();
       payQrUrl.value = me.payQrUrl;
-      if (!isEditing && !_saveTapped && bank.text.isEmpty && accountNumber.text.isEmpty) _fillPayment(me.payment);
+      if (!isEditing && !_saveTapped && bank.text.isEmpty && accountNumber.text.isEmpty) {
+        // The pre-fill isn't the person's change: if they hadn't typed anything yet, it's still "clean".
+        final untouched = !isDirty;
+        _fillPayment(me.payment);
+        if (untouched) _savedSnapshot = _snapshot();
+      }
     } on ApiException {
       // Pre-filling is a convenience; the form works without it.
     }
@@ -107,7 +139,8 @@ class BillEditorController extends GetxController {
   }
 
   /// Display hint only. The server recomputes the real total.
-  int get totalCents => lines.fold(0, (sum, l) => sum + (tryParseCents(l.priceText.value) ?? 0));
+  int get totalCents =>
+      lines.fold(0, (sum, l) => sum + (tryParseCents(l.priceText.value, currency: currency.value) ?? 0));
 
   void addLine() => lines.add(BillLineForm());
 
@@ -125,7 +158,7 @@ class BillEditorController extends GetxController {
     for (final (i, line) in lines.indexed) {
       if (line.isBlank) continue;
       final name = line.name.text.trim();
-      final price = tryParseCents(line.price.text);
+      final price = tryParseCents(line.price.text, currency: currency.value);
       if (name.isEmpty || price == null || price <= 0) {
         errors['items'] ??= S.itemRowIncomplete(i + 1);
         continue;
@@ -159,19 +192,24 @@ class BillEditorController extends GetxController {
 
     saving.value = true;
     try {
+      final Bill saved;
       final bill = existing;
-      if (bill != null) return await _bills.update(bill.id, body);
-
-      final encoded = jsonEncode(body);
-      if (encoded != _pendingBody) {
-        _pendingKey = _uuid.v4();
-        _pendingBody = encoded;
+      if (bill != null) {
+        saved = await _bills.update(bill.id, body);
+      } else {
+        final encoded = jsonEncode(body);
+        if (encoded != _pendingBody) {
+          _pendingKey = _uuid.v4();
+          _pendingBody = encoded;
+        }
+        saved = await _bills.create(body, idempotencyKey: _pendingKey!);
+        _pendingKey = null;
+        _pendingBody = null;
       }
-      final created = await _bills.create(body, idempotencyKey: _pendingKey!);
-      _pendingKey = null;
-      _pendingBody = null;
-      return created;
+      _savedSnapshot = _snapshot();
+      return saved;
     } on ApiException catch (e) {
+      // BILL_CLOSED's message tells the host to reopen the bill first.
       error.value = e.isNetwork ? S.saveOffline : e.message;
       return null;
     } finally {
@@ -180,19 +218,18 @@ class BillEditorController extends GetxController {
   }
 
   Future<void> uploadQr() async {
-    final file = await _picker.pickImage(source: ImageSource.gallery, maxWidth: 1600, imageQuality: 90);
-    if (file == null) return;
-    uploadingQr.value = true;
     error.value = null;
+    final PickedPhoto? photo;
     try {
-      final name = file.name.toLowerCase();
-      final contentType = name.endsWith('.png')
-          ? 'image/png'
-          : name.endsWith('.heic')
-          ? 'image/heic'
-          : 'image/jpeg';
-      await _users.uploadPayQr(await file.readAsBytes(), contentType: contentType);
-      payQrUrl.value = (await _users.me()).payQrUrl;
+      photo = await _picker.pick(ImageSource.gallery, maxWidth: 1600, imageQuality: 90);
+    } on PhotoPickException catch (e) {
+      error.value = e.message;
+      return;
+    }
+    if (photo == null) return;
+    uploadingQr.value = true;
+    try {
+      payQrUrl.value = await _users.uploadPayQr(photo.bytes, contentType: photo.contentType);
     } on ApiException catch (e) {
       error.value = e.message;
     } finally {

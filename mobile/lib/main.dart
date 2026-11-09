@@ -8,9 +8,12 @@ import 'app/theme.dart';
 import 'repositories/repositories.dart';
 import 'services/api_client.dart';
 import 'services/auth_service.dart';
+import 'services/cognito_backend.dart';
+import 'services/crash_reporting.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await initCrashReporting();
 
   if (!AppConfig.isConfigured) {
     runApp(const _MissingConfigApp());
@@ -18,17 +21,22 @@ Future<void> main() async {
   }
 
   // App-wide singletons. Page controllers come from route bindings (app/routes.dart).
-  final auth = await Get.putAsync(() => AuthService().init(), permanent: true);
+  // restore() only reads secure storage: the first screen doesn't wait for the network.
+  // Tokens are refreshed on the first request that needs one.
+  final auth = await AuthService(AmazonCognitoBackend(userPoolId: AppConfig.userPoolId, clientId: AppConfig.clientId))
+      .restore();
+  Get.put(auth, permanent: true);
   final api = Get.put(ApiClient(auth), permanent: true);
   Get
     ..put(UserRepository(api), permanent: true)
     ..put(GroupsRepository(api), permanent: true)
+    ..put(InvitesRepository(api), permanent: true)
     ..put(ExpensesRepository(api), permanent: true)
     ..put(SettlementsRepository(api), permanent: true)
     ..put(ReceiptsRepository(api), permanent: true)
     ..put(BillsRepository(api), permanent: true);
 
-  runApp(NetZeroApp(initialRoute: auth.isSignedIn.value ? Routes.groups : Routes.signIn));
+  runApp(NetZeroApp(initialRoute: auth.isSignedIn ? Routes.groups : Routes.signIn));
 }
 
 class NetZeroApp extends StatelessWidget {
@@ -49,6 +57,7 @@ class NetZeroApp extends StatelessWidget {
       darkTheme: buildTheme(Brightness.dark),
       initialRoute: initialRoute,
       getPages: pages,
+      navigatorObservers: [routeObserver],
     );
   }
 }

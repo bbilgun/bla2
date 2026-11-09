@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
@@ -8,105 +10,118 @@ import '../models/models.dart';
 import '../services/api_client.dart';
 import 'widgets.dart';
 
+/// Adds an expense, or edits one (the controller's `existing`). Returns the saved [Expense] to the
+/// page that opened it; anything else (backed out, changed by someone else) means "reload".
 class AddExpensePage extends GetView<AddExpenseController> {
   const AddExpensePage({super.key});
 
-  Future<void> _save() async {
+  Future<void> _save(BuildContext context) async {
     try {
       final expense = await controller.save();
-      if (expense != null) Get.back(result: true);
+      if (expense != null) {
+        Get.back<Object?>(result: expense);
+      } else if (controller.outdated && context.mounted) {
+        // Someone else changed (or deleted) it meanwhile: say so, then go back so it's reloaded.
+        await showMessage(context, title: S.expenseChangedTitle, message: controller.error.value ?? S.expenseChanged);
+        Get.back<Object?>(result: false);
+      }
     } on GroupNotFoundException {
-      Get.back(result: false);
+      Get.back<Object?>(result: false);
     }
   }
 
   @override
   Widget build(BuildContext context) {
     final group = controller.group;
+    final currency = group.currency;
     final text = Theme.of(context).textTheme;
-    return Scaffold(
-      appBar: AppBar(title: const Text(S.addExpense)),
-      body: SafeArea(
-        child: ListView(
-          padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
-          children: [
-            Obx(
-              () => TextField(
-                controller: controller.description,
-                textCapitalization: TextCapitalization.sentences,
-                textInputAction: TextInputAction.next,
-                decoration: InputDecoration(
-                  labelText: S.description,
-                  hintText: S.descriptionHint,
-                  errorText: controller.fieldErrors['description'],
+    return FormPopScope(
+      saving: () => controller.saving.value,
+      isDirty: () => controller.isDirty,
+      child: Scaffold(
+        appBar: AppBar(title: Text(controller.isEditing ? S.editExpense : S.addExpense)),
+        body: SafeArea(
+          child: ListView(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+            children: [
+              Obx(
+                () => TextField(
+                  controller: controller.description,
+                  textCapitalization: TextCapitalization.sentences,
+                  textInputAction: TextInputAction.next,
+                  decoration: InputDecoration(
+                    labelText: S.description,
+                    hintText: S.descriptionHint,
+                    errorText: controller.fieldErrors['description'],
+                  ),
                 ),
               ),
-            ),
-            const SizedBox(height: 12),
-            Obx(
-              () => TextField(
-                controller: controller.amount,
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                decoration: InputDecoration(
-                  labelText: S.amount,
-                  prefixText: symbolAfterAmount(group.currency) ? null : '${currencySymbol(group.currency)} ',
-                  suffixText: symbolAfterAmount(group.currency) ? currencySymbol(group.currency) : null,
-                  hintText: '0.00',
-                  errorText: controller.fieldErrors['amount'],
+              const SizedBox(height: 12),
+              Obx(
+                () => TextField(
+                  controller: controller.amount,
+                  keyboardType: TextInputType.numberWithOptions(decimal: hasMinorUnits(currency)),
+                  decoration: InputDecoration(
+                    labelText: S.amount,
+                    prefixText: symbolAfterAmount(currency) ? null : '${currencySymbol(currency)} ',
+                    suffixText: symbolAfterAmount(currency) ? currencySymbol(currency) : null,
+                    hintText: amountPlaceholder(currency),
+                    errorText: controller.fieldErrors['amount'],
+                  ),
                 ),
               ),
-            ),
-            const SizedBox(height: 12),
-            Obx(
-              () => DropdownButtonFormField<String>(
-                initialValue: controller.paidBy.value,
-                decoration: InputDecoration(labelText: S.paidBy, errorText: controller.fieldErrors['paidBy']),
-                items: [for (final m in group.members) DropdownMenuItem(value: m.userId, child: Text(m.name))],
-                onChanged: (v) => controller.paidBy.value = v ?? controller.paidBy.value,
+              const SizedBox(height: 12),
+              Obx(
+                () => DropdownButtonFormField<String>(
+                  initialValue: controller.paidBy.value,
+                  decoration: InputDecoration(labelText: S.paidBy, errorText: controller.fieldErrors['paidBy']),
+                  items: [for (final m in group.members) DropdownMenuItem(value: m.userId, child: Text(m.name))],
+                  onChanged: (v) => controller.paidBy.value = v ?? controller.paidBy.value,
+                ),
               ),
-            ),
-            const SizedBox(height: 24),
-            Text(S.split, style: text.titleMedium),
-            const SizedBox(height: 8),
-            Obx(
-              () => SegmentedButton<SplitType>(
-                segments: [for (final t in SplitType.values) ButtonSegment(value: t, label: Text(t.label))],
-                selected: {controller.splitType.value},
-                onSelectionChanged: (s) {
-                  controller.splitType.value = s.first;
-                  controller.fieldErrors.remove('split');
+              const SizedBox(height: 24),
+              Text(S.split, style: text.titleMedium),
+              const SizedBox(height: 8),
+              Obx(
+                () => SegmentedButton<SplitType>(
+                  segments: [for (final t in SplitType.values) ButtonSegment(value: t, label: Text(t.label))],
+                  selected: {controller.splitType.value},
+                  onSelectionChanged: (s) {
+                    controller.splitType.value = s.first;
+                    controller.fieldErrors.remove('split');
+                  },
+                ),
+              ),
+              const SizedBox(height: 12),
+              Obx(
+                () => switch (controller.splitType.value) {
+                  SplitType.even => _EvenSplit(controller: controller),
+                  SplitType.exact => _ExactSplit(controller: controller),
+                  SplitType.percent => _PercentSplit(controller: controller),
                 },
               ),
-            ),
-            const SizedBox(height: 12),
-            Obx(
-              () => switch (controller.splitType.value) {
-                SplitType.even => _EvenSplit(controller: controller),
-                SplitType.exact => _ExactSplit(controller: controller),
-                SplitType.percent => _PercentSplit(controller: controller),
-              },
-            ),
-            Obx(() {
-              final e = controller.fieldErrors['split'];
-              return e == null
-                  ? const SizedBox.shrink()
-                  : Padding(
-                      padding: const EdgeInsets.only(top: 8),
-                      child: Text(e, style: TextStyle(color: Theme.of(context).colorScheme.error)),
-                    );
-            }),
-            const SizedBox(height: 20),
-            Obx(() => InlineError(controller.error.value)),
-            const SizedBox(height: 12),
-            Obx(
-              () => FilledButton(
-                onPressed: controller.saving.value ? null : _save,
-                child: controller.saving.value
-                    ? const SizedBox.square(dimension: 20, child: CircularProgressIndicator(strokeWidth: 2))
-                    : const Text(S.save),
+              Obx(() {
+                final e = controller.fieldErrors['split'];
+                return e == null
+                    ? const SizedBox.shrink()
+                    : Padding(
+                        padding: const EdgeInsets.only(top: 8),
+                        child: Text(e, style: TextStyle(color: Theme.of(context).colorScheme.error)),
+                      );
+              }),
+              const SizedBox(height: 20),
+              Obx(() => InlineError(controller.error.value)),
+              const SizedBox(height: 12),
+              Obx(
+                () => FilledButton(
+                  onPressed: controller.saving.value ? null : () => unawaited(_save(context)),
+                  child: controller.saving.value
+                      ? const SizedBox.square(dimension: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Text(S.save),
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -162,11 +177,14 @@ class _ExactSplit extends StatelessWidget {
                 Expanded(child: Text(m.name)),
                 SizedBox(
                   width: 130,
-                  child: TextField(
-                    controller: controller.exactCtrls[m.userId],
-                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                    textAlign: TextAlign.end,
-                    decoration: const InputDecoration(hintText: '0.00', isDense: true),
+                  child: Semantics(
+                    label: S.exactShareFor(m.name),
+                    child: TextField(
+                      controller: controller.exactCtrls[m.userId],
+                      keyboardType: TextInputType.numberWithOptions(decimal: hasMinorUnits(currency)),
+                      textAlign: TextAlign.end,
+                      decoration: InputDecoration(hintText: amountPlaceholder(currency), isDense: true),
+                    ),
                   ),
                 ),
               ],
@@ -203,6 +221,11 @@ class _PercentSplit extends StatelessWidget {
   Widget build(BuildContext context) {
     return Column(
       children: [
+        if (controller.mustReenterPercents)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 4),
+            child: Text(S.reenterPercents, style: Theme.of(context).textTheme.bodySmall),
+          ),
         for (final m in controller.group.members)
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 6),
@@ -213,11 +236,14 @@ class _PercentSplit extends StatelessWidget {
                 Expanded(child: Text(m.name)),
                 SizedBox(
                   width: 110,
-                  child: TextField(
-                    controller: controller.percentCtrls[m.userId],
-                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                    textAlign: TextAlign.end,
-                    decoration: const InputDecoration(hintText: '0.00', suffixText: '%', isDense: true),
+                  child: Semantics(
+                    label: S.percentShareFor(m.name),
+                    child: TextField(
+                      controller: controller.percentCtrls[m.userId],
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      textAlign: TextAlign.end,
+                      decoration: const InputDecoration(hintText: '0.00', suffixText: '%', isDense: true),
+                    ),
                   ),
                 ),
               ],

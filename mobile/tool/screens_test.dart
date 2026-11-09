@@ -14,6 +14,7 @@ import 'package:netzero/controllers/bill_detail_controller.dart';
 import 'package:netzero/controllers/bills_controller.dart';
 import 'package:netzero/controllers/group_detail_controller.dart';
 import 'package:netzero/controllers/groups_controller.dart';
+import 'package:netzero/controllers/invites_controller.dart';
 import 'package:netzero/models/models.dart';
 import 'package:netzero/pages/auth_pages.dart';
 import 'package:netzero/pages/bill_detail_page.dart';
@@ -27,6 +28,9 @@ const me = 'me';
 class FakeAuth extends GetxService implements AuthService {
   @override
   String? userId = me;
+
+  @override
+  bool takeExpiredNotice() => false;
 
   @override
   dynamic noSuchMethod(Invocation invocation) => null;
@@ -43,11 +47,10 @@ Group group(String id, String name, [String currency = 'MNT']) =>
 
 class FakeGroups implements GroupsRepository {
   @override
-  Future<List<Group>> list() async => [
-    group('g1', 'Байрны зардал'),
-    group('g2', 'Токиогийн аялал', 'USD'),
-    group('g3', 'Ажлын үдийн хоол'),
-  ];
+  Future<CursorPage<Group>> list({String? cursor, int limit = 50}) async => CursorPage(
+    items: [group('g1', 'Байрны зардал'), group('g2', 'Токиогийн аялал', 'USD'), group('g3', 'Ажлын үдийн хоол')],
+    nextCursor: null,
+  );
 
   @override
   Future<Group> get(String id) async => group(id, 'Байрны зардал');
@@ -99,6 +102,24 @@ class FakeExpenses implements ExpensesRepository {
   dynamic noSuchMethod(Invocation invocation) => throw UnimplementedError();
 }
 
+class FakeInvites implements InvitesRepository {
+  @override
+  Future<List<PendingInvite>> list() async => [
+    PendingInvite(
+      id: 'i1',
+      groupId: 'g9',
+      groupName: 'Говийн аялал',
+      currency: 'MNT',
+      memberCount: 4,
+      invitedByName: 'Бат',
+      createdAt: now,
+    ),
+  ];
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => throw UnimplementedError();
+}
+
 class FakeUsers implements UserRepository {
   @override
   Future<Me> me() async => const Me(userId: 'me', email: 'b@x.mn', name: 'Билгүүн');
@@ -139,22 +160,28 @@ Bill sampleBill() => Bill.fromJson({
       'paid': false,
       'itemIds': ['i1'],
       'totalCents': 1_000_000,
+      'paidCents': 0,
+      'dueCents': 1_000_000,
     },
     {
       'id': 'bat',
       'name': 'Бат',
       'isHost': false,
-      'paid': true,
+      'paid': false,
       'itemIds': ['i1', 'i2'],
       'totalCents': 1_450_000,
+      'paidCents': 1_000_000,
+      'dueCents': 450_000,
     },
     {
       'id': 'saraa',
       'name': 'Сараа',
       'isHost': false,
-      'paid': false,
+      'paid': true,
       'itemIds': ['i1'],
       'totalCents': 1_000_000,
+      'paidCents': 1_000_000,
+      'dueCents': 0,
     },
   ],
   'totalCents': 4_650_000,
@@ -169,28 +196,31 @@ Bill sampleBill() => Bill.fromJson({
 
 class FakeBills implements BillsRepository {
   @override
-  Future<List<BillSummary>> list() async => [
-    BillSummary(
-      id: 'b1',
-      title: 'Оройн хоол',
-      currency: 'MNT',
-      isOpen: true,
-      totalCents: 4_650_000,
-      guestCount: 2,
-      paidCount: 1,
-      createdAt: now,
-    ),
-    BillSummary(
-      id: 'b2',
-      title: 'Төрсөн өдөр',
-      currency: 'MNT',
-      isOpen: false,
-      totalCents: 32_000_000,
-      guestCount: 6,
-      paidCount: 6,
-      createdAt: DateTime(2026, 10, 28),
-    ),
-  ];
+  Future<CursorPage<BillSummary>> list({String? cursor, int limit = 20}) async => CursorPage(
+    nextCursor: null,
+    items: [
+      BillSummary(
+        id: 'b1',
+        title: 'Оройн хоол',
+        currency: 'MNT',
+        isOpen: true,
+        totalCents: 4_650_000,
+        guestCount: 2,
+        paidCount: 1,
+        createdAt: now,
+      ),
+      BillSummary(
+        id: 'b2',
+        title: 'Төрсөн өдөр',
+        currency: 'MNT',
+        isOpen: false,
+        totalCents: 32_000_000,
+        guestCount: 6,
+        paidCount: 6,
+        createdAt: DateTime(2026, 10, 28),
+      ),
+    ],
+  );
 
   @override
   Future<Bill> get(String id) async => sampleBill();
@@ -251,7 +281,8 @@ void main() {
   });
 
   testWidgets('home: groups', (tester) async {
-    Get.put(GroupsController(FakeGroups(), FakeUsers(), Get.find()));
+    Get.put(GroupsController(FakeGroups(), FakeUsers()));
+    Get.put(InvitesController(FakeInvites()));
     Get.put(BillsController(FakeBills()));
     await shoot(tester, '2-groups', const HomePage());
   });

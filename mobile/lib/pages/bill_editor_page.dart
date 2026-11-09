@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
@@ -9,118 +11,119 @@ import 'widgets.dart';
 class BillEditorPage extends GetView<BillEditorController> {
   const BillEditorPage({super.key});
 
+  /// Returns the saved bill to the page that opened it, which reloads either way.
   Future<void> _save() async {
     final bill = await controller.save();
-    if (bill != null) Get.back(result: bill);
+    if (bill != null) Get.back<Object?>(result: bill);
   }
 
   @override
   Widget build(BuildContext context) {
     final text = Theme.of(context).textTheme;
-    return Scaffold(
-      appBar: AppBar(title: Text(controller.isEditing ? S.editBill : S.newBill)),
-      body: SafeArea(
-        child: ListView(
-          padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
-          children: [
-            Obx(
-              () => TextField(
-                controller: controller.title,
-                textCapitalization: TextCapitalization.sentences,
-                textInputAction: TextInputAction.next,
-                decoration: InputDecoration(
-                  labelText: S.billTitle,
-                  hintText: S.billTitleHint,
-                  errorText: controller.fieldErrors['title'],
-                ),
-              ),
-            ),
-            const SizedBox(height: 12),
-            Obx(
-              () => DropdownButtonFormField<String>(
-                initialValue: controller.currency.value,
-                decoration: const InputDecoration(labelText: S.currency),
-                items: const [
-                  'MNT',
-                  'USD',
-                  'EUR',
-                  'KRW',
-                  'CNY',
-                ].map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
-                onChanged: (v) => controller.currency.value = v ?? 'MNT',
-              ),
-            ),
-            const SizedBox(height: 24),
-            Row(
-              children: [
-                Expanded(child: Text(S.items, style: text.titleMedium)),
-                Obx(
-                  () => Text(
-                    S.itemsTotal(formatCents(controller.totalCents, currency: controller.currency.value)),
-                    style: text.titleSmall?.copyWith(fontFeatures: const [FontFeature.tabularFigures()]),
+    final closed = controller.existing?.isOpen == false;
+    return FormPopScope(
+      saving: () => controller.saving.value,
+      isDirty: () => controller.isDirty,
+      child: Scaffold(
+        appBar: AppBar(title: Text(controller.isEditing ? S.editBill : S.newBill)),
+        body: SafeArea(
+          child: ListView(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+            children: [
+              if (closed) ...[const InlineError(S.reopenToEdit), const SizedBox(height: 12)],
+              Obx(
+                () => TextField(
+                  controller: controller.title,
+                  textCapitalization: TextCapitalization.sentences,
+                  textInputAction: TextInputAction.next,
+                  decoration: InputDecoration(
+                    labelText: S.billTitle,
+                    hintText: S.billTitleHint,
+                    errorText: controller.fieldErrors['title'],
                   ),
                 ),
-              ],
-            ),
-            const SizedBox(height: 4),
-            _Lines(controller: controller),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: TextButton.icon(
-                onPressed: controller.addLine,
-                icon: const Icon(Icons.add),
-                label: const Text(S.addItem),
               ),
-            ),
-            Obx(() {
-              final e = controller.fieldErrors['items'];
-              return e == null ? const SizedBox.shrink() : _ErrorText(e);
-            }),
-            const SizedBox(height: 24),
-            Text(S.whereToPay, style: text.titleMedium),
-            const SizedBox(height: 4),
-            Text(S.whereToPayHint, style: text.bodySmall),
-            const SizedBox(height: 12),
-            LayoutBuilder(
-              builder: (context, constraints) => DropdownMenu<String>(
-                controller: controller.bank,
-                width: constraints.maxWidth,
-                enableFilter: true,
-                requestFocusOnTap: true,
-                label: const Text(S.bank),
-                dropdownMenuEntries: [for (final b in S.banks) DropdownMenuEntry(value: b, label: b)],
+              const SizedBox(height: 12),
+              Obx(
+                () => DropdownButtonFormField<String>(
+                  initialValue: controller.currency.value,
+                  decoration: const InputDecoration(labelText: S.currency),
+                  items: [for (final c in currencyCodes) DropdownMenuItem(value: c, child: Text(c))],
+                  onChanged: (v) => controller.currency.value = v ?? 'MNT',
+                ),
               ),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: controller.accountNumber,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(labelText: S.accountNumber),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: controller.accountName,
-              textCapitalization: TextCapitalization.words,
-              decoration: const InputDecoration(labelText: S.accountName),
-            ),
-            Obx(() {
-              final e = controller.fieldErrors['payment'];
-              return e == null ? const SizedBox.shrink() : _ErrorText(e);
-            }),
-            const SizedBox(height: 20),
-            _PayQr(controller: controller),
-            const SizedBox(height: 24),
-            Obx(() => InlineError(controller.error.value)),
-            const SizedBox(height: 12),
-            Obx(
-              () => FilledButton(
-                onPressed: controller.saving.value ? null : _save,
-                child: controller.saving.value
-                    ? const SizedBox.square(dimension: 20, child: CircularProgressIndicator(strokeWidth: 2))
-                    : Text(controller.isEditing ? S.save : S.createBillAndQr),
+              const SizedBox(height: 24),
+              Row(
+                children: [
+                  Expanded(child: Text(S.items, style: text.titleMedium)),
+                  Obx(
+                    () => Text(
+                      S.itemsTotal(formatCents(controller.totalCents, currency: controller.currency.value)),
+                      style: text.titleSmall?.copyWith(fontFeatures: const [FontFeature.tabularFigures()]),
+                    ),
+                  ),
+                ],
               ),
-            ),
-          ],
+              const SizedBox(height: 4),
+              _Lines(controller: controller),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  onPressed: controller.addLine,
+                  icon: const Icon(Icons.add),
+                  label: const Text(S.addItem),
+                ),
+              ),
+              Obx(() {
+                final e = controller.fieldErrors['items'];
+                return e == null ? const SizedBox.shrink() : _ErrorText(e);
+              }),
+              const SizedBox(height: 24),
+              Text(S.whereToPay, style: text.titleMedium),
+              const SizedBox(height: 4),
+              Text(S.whereToPayHint, style: text.bodySmall),
+              const SizedBox(height: 12),
+              LayoutBuilder(
+                builder: (context, constraints) => DropdownMenu<String>(
+                  controller: controller.bank,
+                  width: constraints.maxWidth,
+                  enableFilter: true,
+                  requestFocusOnTap: true,
+                  label: const Text(S.bank),
+                  dropdownMenuEntries: [for (final b in S.banks) DropdownMenuEntry(value: b, label: b)],
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: controller.accountNumber,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(labelText: S.accountNumber),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: controller.accountName,
+                textCapitalization: TextCapitalization.words,
+                decoration: const InputDecoration(labelText: S.accountName),
+              ),
+              Obx(() {
+                final e = controller.fieldErrors['payment'];
+                return e == null ? const SizedBox.shrink() : _ErrorText(e);
+              }),
+              const SizedBox(height: 20),
+              _PayQr(controller: controller),
+              const SizedBox(height: 24),
+              Obx(() => InlineError(controller.error.value)),
+              const SizedBox(height: 12),
+              Obx(
+                () => FilledButton(
+                  onPressed: controller.saving.value ? null : () => unawaited(_save()),
+                  child: controller.saving.value
+                      ? const SizedBox.square(dimension: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                      : Text(controller.isEditing ? S.save : S.createBillAndQr),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -157,7 +160,7 @@ class _Lines extends StatelessWidget {
                     width: 120,
                     child: TextField(
                       controller: line.price,
-                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      keyboardType: TextInputType.numberWithOptions(decimal: hasMinorUnits(controller.currency.value)),
                       textAlign: TextAlign.end,
                       textInputAction: TextInputAction.next,
                       decoration: InputDecoration(
@@ -225,7 +228,7 @@ class _PayQr extends StatelessWidget {
                     Text(S.payQrHint, style: text.bodySmall),
                     TextButton(
                       style: TextButton.styleFrom(padding: EdgeInsets.zero),
-                      onPressed: uploading ? null : controller.uploadQr,
+                      onPressed: uploading ? null : () => unawaited(controller.uploadQr()),
                       child: Text(url == null ? S.uploadQr : S.replaceQr),
                     ),
                   ],

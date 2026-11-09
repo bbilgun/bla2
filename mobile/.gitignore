@@ -53,3 +53,8 @@ env/*.json
 
 # Design-review renders (tool/screens_test.dart)
 tool/screens/
+
+# Release signing (android/app/build.gradle.kts): never commit keys or their passwords
+android/key.properties
+*.jks
+*.keystore

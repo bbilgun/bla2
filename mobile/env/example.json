@@ -2,5 +2,6 @@
   "API_URL": "https://xxxxxxxxxx.execute-api.ap-northeast-1.amazonaws.com",
   "COGNITO_REGION": "ap-northeast-1",
   "COGNITO_USER_POOL_ID": "ap-northeast-1_XXXXXXXXX",
-  "COGNITO_CLIENT_ID": "xxxxxxxxxxxxxxxxxxxxxxxxxx"
+  "COGNITO_CLIENT_ID": "xxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "SENTRY_DSN": ""
 }

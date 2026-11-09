@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:qr_flutter/qr_flutter.dart';
@@ -11,55 +13,94 @@ import '../domain/money.dart';
 import '../models/models.dart';
 import 'widgets.dart';
 
+enum _BillAction { edit, status, newLink, delete }
+
 class BillDetailPage extends GetView<BillDetailController> {
   const BillDetailPage({super.key});
 
+  /// Saved: show the editor's result. Backed out (or a save whose answer was lost): reload.
   Future<void> _edit() async {
-    final updated = await Get.toNamed(Routes.editBillPath(controller.billId));
-    if (updated is Bill) controller.replace(updated);
+    final updated = await Get.toNamed<Object?>(Routes.editBillPath(controller.billId));
+    if (updated is Bill) {
+      controller.replace(updated);
+    } else {
+      await controller.load();
+    }
+  }
+
+  Future<void> _onAction(BuildContext context, Bill bill, _BillAction action) async {
+    switch (action) {
+      case _BillAction.edit:
+        await _edit();
+      case _BillAction.status:
+        await controller.setOpen(!bill.isOpen);
+      case _BillAction.newLink:
+        final ok = await confirmAction(
+          context,
+          title: S.newLinkQuestion,
+          message: S.newLinkWarning,
+          confirmLabel: S.newLink,
+        );
+        if (ok) await controller.rotateLink();
+      case _BillAction.delete:
+        final ok = await confirmAction(
+          context,
+          title: S.deleteBill,
+          message: S.deleteBillQuestion,
+          confirmLabel: S.delete,
+        );
+        if (ok && await controller.delete()) Get.back<void>();
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Obx(() => Text(controller.bill.value?.title ?? '')),
-        actions: [
-          Obx(() {
-            final bill = controller.bill.value;
-            if (bill == null) return const SizedBox.shrink();
-            return PopupMenuButton<String>(
-              itemBuilder: (_) => [
-                const PopupMenuItem(value: 'edit', child: Text(S.editBill)),
-                PopupMenuItem(value: 'status', child: Text(bill.isOpen ? S.closeBill : S.reopenBill)),
+    // Polling stops while another page (the editor) covers this one.
+    return RouteVisibility(
+      onCovered: () => controller.setCovered(true),
+      onUncovered: () => controller.setCovered(false),
+      child: Scaffold(
+        appBar: AppBar(
+          title: Obx(() => Text(controller.bill.value?.title ?? '')),
+          actions: [
+            Obx(() {
+              final bill = controller.bill.value;
+              if (bill == null) return const SizedBox.shrink();
+              return PopupMenuButton<_BillAction>(
+                itemBuilder: (_) => [
+                  const PopupMenuItem(value: _BillAction.edit, child: Text(S.editBill)),
+                  PopupMenuItem(value: _BillAction.status, child: Text(bill.isOpen ? S.closeBill : S.reopenBill)),
+                  const PopupMenuItem(value: _BillAction.newLink, child: Text(S.newLink)),
+                  const PopupMenuItem(value: _BillAction.delete, child: Text(S.deleteBill)),
+                ],
+                onSelected: (a) => unawaited(_onAction(context, bill, a)),
+              );
+            }),
+          ],
+        ),
+        body: Obx(() {
+          if (controller.loading.value) return const SkeletonList(header: true, count: 3);
+          final bill = controller.bill.value;
+          final error = controller.error.value;
+          if (bill == null) return ErrorRetry(message: error ?? S.somethingWentWrong, onRetry: controller.retry);
+          return RefreshIndicator(
+            onRefresh: controller.load,
+            child: ListView(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+              children: [
+                if (!bill.isOpen) ...[const InlineError(S.closedBanner), const SizedBox(height: 12)],
+                _CollectedHero(bill: bill),
+                const SizedBox(height: 12),
+                _QrCard(bill: bill, controller: controller),
+                const SizedBox(height: 12),
+                _MyItems(bill: bill, controller: controller),
+                const SizedBox(height: 12),
+                _Guests(bill: bill, controller: controller),
               ],
-              onSelected: (v) => v == 'edit' ? _edit() : controller.setOpen(!bill.isOpen),
-            );
-          }),
-        ],
+            ),
+          );
+        }),
       ),
-      body: Obx(() {
-        if (controller.loading.value) return const SkeletonList(header: true, count: 3);
-        final bill = controller.bill.value;
-        final error = controller.error.value;
-        if (bill == null) return ErrorRetry(message: error ?? S.somethingWentWrong, onRetry: controller.load);
-        return RefreshIndicator(
-          onRefresh: controller.load,
-          child: ListView(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
-            children: [
-              if (!bill.isOpen) ...[const InlineError(S.closedBanner), const SizedBox(height: 12)],
-              _CollectedHero(bill: bill),
-              const SizedBox(height: 12),
-              _QrCard(bill: bill, controller: controller),
-              const SizedBox(height: 12),
-              _MyItems(bill: bill, controller: controller),
-              const SizedBox(height: 12),
-              _Guests(bill: bill, controller: controller),
-            ],
-          ),
-        );
-      }),
     );
   }
 }
@@ -116,7 +157,7 @@ class _QrCard extends StatelessWidget {
                 Expanded(
                   child: Builder(
                     builder: (buttonContext) => FilledButton.icon(
-                      onPressed: () => _share(buttonContext),
+                      onPressed: () => unawaited(_share(buttonContext)),
                       icon: const Icon(Icons.ios_share),
                       label: const Text(S.shareLink),
                     ),
@@ -124,7 +165,7 @@ class _QrCard extends StatelessWidget {
                 ),
                 const SizedBox(width: 12),
                 OutlinedButton.icon(
-                  onPressed: controller.copyLink,
+                  onPressed: () => unawaited(controller.copyLink()),
                   icon: const Icon(Icons.link),
                   label: const Text(S.copyLink),
                 ),
@@ -244,7 +285,7 @@ class _MyItems extends StatelessWidget {
             for (final item in bill.items)
               CheckboxListTile(
                 value: mine.contains(item.id),
-                onChanged: bill.isOpen ? (_) => controller.toggleMine(item.id) : null,
+                onChanged: bill.isOpen ? (_) => unawaited(controller.toggleMine(item.id)) : null,
                 controlAffinity: ListTileControlAffinity.leading,
                 title: Text(item.name),
                 subtitle: Text(
@@ -284,6 +325,28 @@ class _Guests extends StatelessWidget {
     if (ok == true) await controller.removeGuest(guest.id);
   }
 
+  /// "Төлсөн", or the difference when their ticks changed after they marked it paid.
+  Widget? _guestStatus(BillGuest g, ColorScheme colors) {
+    String money(int c) => formatCents(c, currency: bill.currency);
+    if (g.paidCents == 0) return null;
+    if (g.dueCents > 0) {
+      return Text(
+        '${S.paidShort(money(g.paidCents))} · ${S.stillOwes(money(g.dueCents))}',
+        style: TextStyle(color: colors.error, fontWeight: FontWeight.w600),
+      );
+    }
+    if (g.dueCents < 0) {
+      return Text(
+        '${S.paidShort(money(g.paidCents))} · ${S.paidTooMuch(money(-g.dueCents))}',
+        style: TextStyle(color: colors.tertiary, fontWeight: FontWeight.w600),
+      );
+    }
+    return Text(
+      S.paidBadge,
+      style: TextStyle(color: colors.primary, fontWeight: FontWeight.w600),
+    );
+  }
+
   @override
   Widget build(BuildContext context) => Obx(() => _build(context));
 
@@ -306,12 +369,7 @@ class _Guests extends StatelessWidget {
               ListTile(
                 leading: Initials(g.name),
                 title: Text(g.name),
-                subtitle: g.paid
-                    ? Text(
-                        S.paidBadge,
-                        style: TextStyle(color: colors.primary, fontWeight: FontWeight.w600),
-                      )
-                    : null,
+                subtitle: _guestStatus(g, colors),
                 trailing: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
@@ -323,11 +381,15 @@ class _Guests extends StatelessWidget {
                           )
                         : PopupMenuButton<String>(
                             itemBuilder: (_) => [
-                              PopupMenuItem(value: 'paid', child: Text(g.paid ? S.markUnpaid : S.markPaid)),
+                              if (!g.paid) const PopupMenuItem(value: 'paid', child: Text(S.markPaid)),
+                              if (g.paidCents > 0) const PopupMenuItem(value: 'unpaid', child: Text(S.markUnpaid)),
                               const PopupMenuItem(value: 'remove', child: Text(S.remove)),
                             ],
-                            onSelected: (v) =>
-                                v == 'paid' ? controller.setPaid(g.id, !g.paid) : _confirmRemove(context, g),
+                            onSelected: (v) => unawaited(switch (v) {
+                              'paid' => controller.setPaid(g, true),
+                              'unpaid' => controller.setPaid(g, false),
+                              _ => _confirmRemove(context, g),
+                            }),
                           ),
                   ],
                 ),

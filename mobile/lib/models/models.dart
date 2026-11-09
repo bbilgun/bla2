@@ -4,12 +4,41 @@ library;
 
 import '../app/strings.dart';
 
+DateTime? _date(Object? value) => value == null ? null : DateTime.parse(value as String);
+
+List<T> _list<T>(Object? json, T Function(Map<String, dynamic>) item) => [
+  for (final x in (json as List<dynamic>? ?? const [])) item(x as Map<String, dynamic>),
+];
+
+/// One page of a newest-first list. Pass [nextCursor] back to get the next page; null means the end.
+class CursorPage<T> {
+  const CursorPage({required this.items, required this.nextCursor});
+
+  final List<T> items;
+  final String? nextCursor;
+
+  factory CursorPage.fromJson(Map<String, dynamic> json, T Function(Map<String, dynamic>) item) =>
+      CursorPage(items: _list(json['items'], item), nextCursor: json['nextCursor'] as String?);
+}
+
+typedef ExpensePage = CursorPage<Expense>;
+
 class Me {
-  const Me({required this.userId, required this.email, required this.name, this.payment, this.payQrUrl});
+  const Me({
+    required this.userId,
+    required this.email,
+    required this.name,
+    this.emailVerified = false,
+    this.payment,
+    this.payQrUrl,
+  });
 
   final String userId;
   final String email;
   final String name;
+
+  /// Invites reach only a verified email address.
+  final bool emailVerified;
 
   /// Bank details from the last bill, to pre-fill the next one.
   final PaymentInfo? payment;
@@ -21,6 +50,7 @@ class Me {
     userId: json['userId'] as String,
     email: json['email'] as String,
     name: json['name'] as String,
+    emailVerified: json['emailVerified'] as bool? ?? false,
     payment: json['payment'] == null ? null : PaymentInfo.fromJson(json['payment'] as Map<String, dynamic>),
     payQrUrl: json['payQrUrl'] as String?,
   );
@@ -37,6 +67,23 @@ class Member {
       Member(userId: json['userId'] as String, email: json['email'] as String, name: json['name'] as String);
 }
 
+/// Someone invited to a group by email who hasn't accepted yet (the group's view).
+class GroupInvite {
+  const GroupInvite({required this.id, required this.email, required this.invitedBy, required this.createdAt});
+
+  final String id;
+  final String email;
+  final String invitedBy;
+  final DateTime createdAt;
+
+  factory GroupInvite.fromJson(Map<String, dynamic> json) => GroupInvite(
+    id: json['id'] as String,
+    email: json['email'] as String,
+    invitedBy: json['invitedBy'] as String,
+    createdAt: DateTime.parse(json['createdAt'] as String),
+  );
+}
+
 class Group {
   const Group({
     required this.id,
@@ -44,19 +91,22 @@ class Group {
     required this.currency,
     required this.members,
     required this.createdAt,
+    this.invites = const [],
   });
 
   final String id;
   final String name;
   final String currency;
   final List<Member> members;
+  final List<GroupInvite> invites;
   final DateTime createdAt;
 
   factory Group.fromJson(Map<String, dynamic> json) => Group(
     id: json['id'] as String,
     name: json['name'] as String,
     currency: json['currency'] as String,
-    members: (json['members'] as List).map((m) => Member.fromJson(m as Map<String, dynamic>)).toList(),
+    members: _list(json['members'], Member.fromJson),
+    invites: _list(json['invites'], GroupInvite.fromJson),
     createdAt: DateTime.parse(json['createdAt'] as String),
   );
 
@@ -66,6 +116,39 @@ class Group {
     }
     return S.formerMember;
   }
+
+  bool isMember(String userId) => members.any((m) => m.userId == userId);
+}
+
+/// An invite to me (GET /invites), shown on the groups page to accept or decline.
+class PendingInvite {
+  const PendingInvite({
+    required this.id,
+    required this.groupId,
+    required this.groupName,
+    required this.currency,
+    required this.memberCount,
+    required this.invitedByName,
+    required this.createdAt,
+  });
+
+  final String id;
+  final String groupId;
+  final String groupName;
+  final String currency;
+  final int memberCount;
+  final String invitedByName;
+  final DateTime createdAt;
+
+  factory PendingInvite.fromJson(Map<String, dynamic> json) => PendingInvite(
+    id: json['id'] as String,
+    groupId: json['groupId'] as String,
+    groupName: json['groupName'] as String,
+    currency: json['currency'] as String,
+    memberCount: json['memberCount'] as int,
+    invitedByName: json['invitedByName'] as String,
+    createdAt: DateTime.parse(json['createdAt'] as String),
+  );
 }
 
 enum SplitType {
@@ -77,7 +160,9 @@ enum SplitType {
   final String wire;
   final String label;
 
-  static SplitType fromWire(String value) => values.firstWhere((t) => t.wire == value);
+  /// Unknown values (a newer server) read as [exact]: the rows still carry each person's amount,
+  /// so one odd expense can't break the whole group page.
+  static SplitType fromWire(String value) => values.firstWhere((t) => t.wire == value, orElse: () => SplitType.exact);
 }
 
 class Split {
@@ -101,6 +186,9 @@ class Expense {
     required this.splits,
     required this.hasReceipt,
     required this.createdAt,
+    this.version = 1,
+    this.updatedAt,
+    this.updatedBy,
   });
 
   final String id;
@@ -113,6 +201,11 @@ class Expense {
   final bool hasReceipt;
   final DateTime createdAt;
 
+  /// Sent back with an edit: the server refuses it (EXPENSE_CHANGED) if someone changed it meanwhile.
+  final int version;
+  final DateTime? updatedAt;
+  final String? updatedBy;
+
   factory Expense.fromJson(Map<String, dynamic> json) => Expense(
     id: json['id'] as String,
     groupId: json['groupId'] as String,
@@ -120,9 +213,12 @@ class Expense {
     amountCents: json['amountCents'] as int,
     paidBy: json['paidBy'] as String,
     splitType: SplitType.fromWire(json['splitType'] as String),
-    splits: (json['splits'] as List).map((s) => Split.fromJson(s as Map<String, dynamic>)).toList(),
+    splits: _list(json['splits'], Split.fromJson),
     hasReceipt: json['hasReceipt'] as bool? ?? false,
     createdAt: DateTime.parse(json['createdAt'] as String),
+    version: json['version'] as int? ?? 1,
+    updatedAt: _date(json['updatedAt']),
+    updatedBy: json['updatedBy'] as String?,
   );
 
   Expense copyWith({bool? hasReceipt}) => Expense(
@@ -135,18 +231,9 @@ class Expense {
     splits: splits,
     hasReceipt: hasReceipt ?? this.hasReceipt,
     createdAt: createdAt,
-  );
-}
-
-class ExpensePage {
-  const ExpensePage({required this.items, required this.nextCursor});
-
-  final List<Expense> items;
-  final String? nextCursor;
-
-  factory ExpensePage.fromJson(Map<String, dynamic> json) => ExpensePage(
-    items: (json['items'] as List).map((e) => Expense.fromJson(e as Map<String, dynamic>)).toList(),
-    nextCursor: json['nextCursor'] as String?,
+    version: version,
+    updatedAt: updatedAt,
+    updatedBy: updatedBy,
   );
 }
 
@@ -186,8 +273,8 @@ class Balances {
 
   factory Balances.fromJson(Map<String, dynamic> json) => Balances(
     currency: json['currency'] as String,
-    balances: (json['balances'] as List).map((b) => MemberBalance.fromJson(b as Map<String, dynamic>)).toList(),
-    transfers: (json['transfers'] as List).map((t) => Transfer.fromJson(t as Map<String, dynamic>)).toList(),
+    balances: _list(json['balances'], MemberBalance.fromJson),
+    transfers: _list(json['transfers'], Transfer.fromJson),
   );
 
   int netOf(String userId) {
@@ -220,17 +307,28 @@ class Settlement {
     amountCents: json['amountCents'] as int,
     createdAt: DateTime.parse(json['createdAt'] as String),
   );
+
+  bool involves(String userId) => fromUserId == userId || toUserId == userId;
 }
 
-class ReceiptUpload {
-  const ReceiptUpload({required this.uploadUrl, required this.headers});
+/// A presigned S3 POST: send every field, then the file last as `file`. Then confirm the [key].
+class PresignedPost {
+  const PresignedPost({required this.uploadUrl, required this.fields, required this.key, required this.maxBytes});
 
   final String uploadUrl;
-  final Map<String, String> headers;
+  final Map<String, String> fields;
 
-  factory ReceiptUpload.fromJson(Map<String, dynamic> json) => ReceiptUpload(
+  /// Where the object lands; the confirm call sends it back.
+  final String key;
+
+  /// S3 refuses anything bigger (the policy says so); checked before uploading too.
+  final int maxBytes;
+
+  factory PresignedPost.fromJson(Map<String, dynamic> json) => PresignedPost(
     uploadUrl: json['uploadUrl'] as String,
-    headers: (json['headers'] as Map).map((k, v) => MapEntry(k as String, v as String)),
+    fields: (json['fields'] as Map<String, dynamic>).map((k, v) => MapEntry(k, v as String)),
+    key: json['key'] as String,
+    maxBytes: json['maxBytes'] as int? ?? 10 * 1024 * 1024,
   );
 }
 
@@ -275,8 +373,8 @@ class BillItem {
     id: json['id'] as String,
     name: json['name'] as String,
     priceCents: json['priceCents'] as int,
-    claimedBy: (json['claimedBy'] as List).cast<String>(),
-    shares: (json['shares'] as Map).map((k, v) => MapEntry(k as String, v as int)),
+    claimedBy: (json['claimedBy'] as List<dynamic>).cast<String>(),
+    shares: (json['shares'] as Map<String, dynamic>).map((k, v) => MapEntry(k, v as int)),
   );
 }
 
@@ -288,22 +386,37 @@ class BillGuest {
     required this.paid,
     required this.itemIds,
     required this.totalCents,
+    required this.paidCents,
+    required this.dueCents,
   });
 
   final String id;
   final String name;
   final bool isHost;
+
+  /// Marked paid, and what they marked covers their current total.
   final bool paid;
   final List<String> itemIds;
   final int totalCents;
+
+  /// What the guest marked as paid (0 = not marked).
+  final int paidCents;
+
+  /// totalCents − paidCents, from the server: positive = still owes, negative = paid too much.
+  final int dueCents;
+
+  /// Marked paid, but their ticks changed afterwards so the amounts differ.
+  bool get paidDiffers => paidCents > 0 && dueCents != 0;
 
   factory BillGuest.fromJson(Map<String, dynamic> json) => BillGuest(
     id: json['id'] as String,
     name: json['name'] as String,
     isHost: json['isHost'] as bool,
     paid: json['paid'] as bool,
-    itemIds: (json['itemIds'] as List).cast<String>(),
+    itemIds: (json['itemIds'] as List<dynamic>).cast<String>(),
     totalCents: json['totalCents'] as int,
+    paidCents: json['paidCents'] as int,
+    dueCents: json['dueCents'] as int,
   );
 }
 
@@ -326,6 +439,7 @@ class Bill {
     required this.hasPayQr,
     required this.url,
     required this.createdAt,
+    this.updatedAt,
   });
 
   static const hostGuestId = 'host';
@@ -351,6 +465,9 @@ class Bill {
   final String url;
   final DateTime createdAt;
 
+  /// Last change on the server. A poll that answers with an older one is stale and is dropped.
+  final DateTime? updatedAt;
+
   BillGuest get host => guests.firstWhere((g) => g.isHost);
   List<BillGuest> get others => guests.where((g) => !g.isHost).toList();
 
@@ -368,8 +485,8 @@ class Bill {
     currency: json['currency'] as String,
     isOpen: json['status'] == 'OPEN',
     hostName: json['hostName'] as String,
-    items: (json['items'] as List).map((i) => BillItem.fromJson(i as Map<String, dynamic>)).toList(),
-    guests: (json['guests'] as List).map((g) => BillGuest.fromJson(g as Map<String, dynamic>)).toList(),
+    items: _list(json['items'], BillItem.fromJson),
+    guests: _list(json['guests'], BillGuest.fromJson),
     totalCents: json['totalCents'] as int,
     unclaimedCents: json['unclaimedCents'] as int,
     owedCents: json['owedCents'] as int,
@@ -378,6 +495,7 @@ class Bill {
     hasPayQr: json['hasPayQr'] as bool? ?? false,
     url: json['url'] as String,
     createdAt: DateTime.parse(json['createdAt'] as String),
+    updatedAt: _date(json['updatedAt']),
   );
 }
 

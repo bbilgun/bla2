@@ -32,7 +32,7 @@ class FakeExpenses implements ExpensesRepository {
   }
 
   @override
-  Future<ExpensePage> list(String groupId, {String? cursor, int limit = 20}) => throw UnimplementedError();
+  dynamic noSuchMethod(Invocation invocation) => throw UnimplementedError();
 }
 
 final flat = Group(
@@ -86,6 +86,31 @@ void main() {
       await c.save();
       expect(repo.calls[0].key, isNot(repo.calls[1].key));
     });
+  });
+
+  group('currencies without minor units', () {
+    test('KRW amounts are whole won: "25,000" is 25000', () {
+      final krw = Group(
+        id: 'g2',
+        name: 'Seoul',
+        currency: 'KRW',
+        members: flat.members,
+        createdAt: DateTime.utc(2026, 11, 1),
+      );
+      final c = AddExpenseController(group: krw, myUserId: 'a', expenses: FakeExpenses())
+        ..description.text = 'Bibimbap'
+        ..amount.text = '25,000';
+      expect(c.amountCents, 25000);
+      c.amount.text = '25000.50';
+      expect(c.amountCents, isNull);
+    });
+  });
+
+  test('splitting percent evenly fills the fields with the same format as formatBasisPoints', () {
+    final c = make(FakeExpenses())..splitType.value = SplitType.percent;
+    c.splitPercentEvenly();
+    expect(c.percentCtrls['a']!.text, '33.34');
+    expect(c.percentCtrls['b']!.text, '33.33');
   });
 
   group('body', () {

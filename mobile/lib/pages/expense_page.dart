@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:image_picker/image_picker.dart';
@@ -10,12 +12,44 @@ import 'widgets.dart';
 class ExpensePage extends GetView<ExpenseController> {
   const ExpensePage({super.key});
 
+  Future<void> _delete(BuildContext context) async {
+    final ok = await confirmAction(
+      context,
+      title: S.deleteExpense,
+      message: S.deleteExpenseQuestion,
+      confirmLabel: S.delete,
+    );
+    if (ok && await controller.delete()) Get.back<void>();
+  }
+
   @override
   Widget build(BuildContext context) {
     final text = Theme.of(context).textTheme;
     final scheme = Theme.of(context).colorScheme;
     return Scaffold(
-      appBar: AppBar(title: const Text(S.expense)),
+      appBar: AppBar(
+        title: const Text(S.expense),
+        actions: [
+          Obx(() {
+            final busy = controller.expense == null || controller.deleting.value || controller.uploading.value;
+            return Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  tooltip: S.editExpense,
+                  icon: const Icon(Icons.edit_outlined),
+                  onPressed: busy ? null : () => unawaited(controller.edit()),
+                ),
+                IconButton(
+                  tooltip: S.deleteExpense,
+                  icon: const Icon(Icons.delete_outline),
+                  onPressed: busy ? null : () => unawaited(_delete(context)),
+                ),
+              ],
+            );
+          }),
+        ],
+      ),
       body: Obx(() {
         final expense = controller.expense;
         final group = controller.detail.group.value;
@@ -39,6 +73,14 @@ class ExpensePage extends GetView<ExpenseController> {
               ),
               style: text.bodyMedium?.copyWith(color: scheme.onSurfaceVariant),
             ),
+            if (expense.updatedAt != null && expense.updatedBy != null)
+              Text(
+                S.editedBy(
+                  expense.updatedBy == controller.detail.myUserId ? S.you : group.nameOf(expense.updatedBy!),
+                  shortDate(expense.updatedAt!),
+                ),
+                style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+              ),
             const SizedBox(height: 20),
             Card(
               child: Padding(
@@ -70,7 +112,9 @@ class ExpensePage extends GetView<ExpenseController> {
               children: [
                 Expanded(
                   child: OutlinedButton.icon(
-                    onPressed: controller.uploading.value ? null : () => controller.attachReceipt(ImageSource.camera),
+                    onPressed: controller.uploading.value
+                        ? null
+                        : () => unawaited(controller.attachReceipt(ImageSource.camera)),
                     icon: const Icon(Icons.photo_camera_outlined),
                     label: const Text(S.camera),
                   ),
@@ -78,7 +122,9 @@ class ExpensePage extends GetView<ExpenseController> {
                 const SizedBox(width: 12),
                 Expanded(
                   child: OutlinedButton.icon(
-                    onPressed: controller.uploading.value ? null : () => controller.attachReceipt(ImageSource.gallery),
+                    onPressed: controller.uploading.value
+                        ? null
+                        : () => unawaited(controller.attachReceipt(ImageSource.gallery)),
                     icon: const Icon(Icons.photo_library_outlined),
                     label: const Text(S.photos),
                   ),
@@ -121,7 +167,7 @@ class ExpensePage extends GetView<ExpenseController> {
     return ClipRRect(
       borderRadius: BorderRadius.circular(16),
       child: GestureDetector(
-        onTap: () => Get.to<void>(() => _FullScreenImage(url)),
+        onTap: () => unawaited(Get.to<void>(() => _FullScreenImage(url))),
         child: Image.network(
           url,
           height: 260,

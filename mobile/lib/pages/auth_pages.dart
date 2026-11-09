@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
@@ -5,17 +7,49 @@ import '../app/brand.dart';
 import '../app/routes.dart';
 import '../app/strings.dart';
 import '../controllers/auth_controller.dart';
+import '../domain/validators.dart';
 import 'widgets.dart';
 
-String? _required(String? v, String message) => (v == null || v.trim().isEmpty) ? message : null;
+String? _required(String? v, String message) => validateRequired(v, message);
 
-String? _email(String? v) =>
-    (v == null || !RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(v.trim())) ? S.enterValidEmail : null;
+String? _email(String? v) => validateEmail(v);
 
-String? _password(String? v) {
-  if (v == null || v.length < 8) return S.passwordTooShort;
-  if (!RegExp(r'[a-z]').hasMatch(v) || !RegExp(r'\d').hasMatch(v)) return S.passwordNeedsLowerAndDigit;
-  return null;
+String? _password(String? v) => validateNewPassword(v);
+
+/// The submit button: a spinner while [loading].
+class _Submit extends StatelessWidget {
+  const _Submit({required this.controller, required this.label, required this.onPressed});
+
+  final AuthController controller;
+  final String label;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) => Obx(
+    () => FilledButton(
+      onPressed: controller.loading.value ? null : onPressed,
+      child: controller.loading.value
+          ? const SizedBox.square(dimension: 20, child: CircularProgressIndicator(strokeWidth: 2))
+          : Text(label),
+    ),
+  );
+}
+
+class _Info extends StatelessWidget {
+  const _Info({required this.controller});
+
+  final AuthController controller;
+
+  @override
+  Widget build(BuildContext context) => Obx(() {
+    final info = controller.info.value;
+    return info == null
+        ? const SizedBox.shrink()
+        : Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Text(info, style: Theme.of(context).textTheme.bodyMedium),
+          );
+  });
 }
 
 class _AuthScaffold extends StatelessWidget {
@@ -73,6 +107,7 @@ class SignInPage extends GetView<AuthController> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            _Info(controller: controller),
             TextFormField(
               controller: controller.email,
               decoration: const InputDecoration(labelText: S.email),
@@ -87,25 +122,22 @@ class SignInPage extends GetView<AuthController> {
               decoration: const InputDecoration(labelText: S.password),
               obscureText: true,
               autofillHints: const [AutofillHints.password],
-              onFieldSubmitted: (_) => controller.signIn(),
+              onFieldSubmitted: (_) => unawaited(controller.signIn()),
               validator: (v) => _required(v, S.enterPassword),
             ),
-            const SizedBox(height: 16),
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton(onPressed: controller.openForgotPassword, child: const Text(S.forgotPassword)),
+            ),
+            const SizedBox(height: 4),
             Obx(() => InlineError(controller.error.value)),
             const SizedBox(height: 8),
-            Obx(
-              () => FilledButton(
-                onPressed: controller.loading.value ? null : controller.signIn,
-                child: controller.loading.value
-                    ? const SizedBox.square(dimension: 20, child: CircularProgressIndicator(strokeWidth: 2))
-                    : const Text(S.signIn),
-              ),
-            ),
+            _Submit(controller: controller, label: S.signIn, onPressed: controller.signIn),
             const SizedBox(height: 12),
             TextButton(
               onPressed: () {
                 controller.error.value = null;
-                Get.toNamed(Routes.signUp);
+                unawaited(Get.toNamed<void>(Routes.signUp));
               },
               child: const Text(S.newHere),
             ),
@@ -150,23 +182,17 @@ class SignUpPage extends GetView<AuthController> {
             const SizedBox(height: 12),
             TextFormField(
               controller: controller.newPassword,
-              decoration: const InputDecoration(labelText: S.password, helperText: S.passwordHelper),
+              decoration: const InputDecoration(labelText: S.password, helperText: S.passwordHelper, helperMaxLines: 2),
               obscureText: true,
               autofillHints: const [AutofillHints.newPassword],
-              onFieldSubmitted: (_) => controller.signUp(),
+              onFieldSubmitted: (_) => unawaited(controller.signUp()),
               validator: _password,
+              autovalidateMode: AutovalidateMode.onUserInteraction,
             ),
             const SizedBox(height: 16),
             Obx(() => InlineError(controller.error.value)),
             const SizedBox(height: 8),
-            Obx(
-              () => FilledButton(
-                onPressed: controller.loading.value ? null : controller.signUp,
-                child: controller.loading.value
-                    ? const SizedBox.square(dimension: 20, child: CircularProgressIndicator(strokeWidth: 2))
-                    : const Text(S.createAccount),
-              ),
-            ),
+            _Submit(controller: controller, label: S.createAccount, onPressed: controller.signUp),
           ],
         ),
       ),
@@ -193,27 +219,99 @@ class ConfirmPage extends GetView<AuthController> {
               decoration: const InputDecoration(labelText: S.confirmationCode),
               keyboardType: TextInputType.number,
               autofillHints: const [AutofillHints.oneTimeCode],
-              onFieldSubmitted: (_) => controller.confirm(),
+              onFieldSubmitted: (_) => unawaited(controller.confirm()),
               validator: (v) => _required(v, S.enterCode),
             ),
             const SizedBox(height: 12),
-            Obx(() {
-              final info = controller.info.value;
-              return info == null ? const SizedBox.shrink() : Text(info, style: Theme.of(context).textTheme.bodyMedium);
-            }),
-            const SizedBox(height: 12),
+            _Info(controller: controller),
             Obx(() => InlineError(controller.error.value)),
             const SizedBox(height: 8),
-            Obx(
-              () => FilledButton(
-                onPressed: controller.loading.value ? null : controller.confirm,
-                child: controller.loading.value
-                    ? const SizedBox.square(dimension: 20, child: CircularProgressIndicator(strokeWidth: 2))
-                    : const Text(S.confirmAndSignIn),
-              ),
-            ),
+            _Submit(controller: controller, label: S.confirmAndSignIn, onPressed: controller.confirm),
             const SizedBox(height: 8),
             TextButton(onPressed: controller.resendCode, child: const Text(S.resendCode)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class ForgotPasswordPage extends GetView<AuthController> {
+  const ForgotPasswordPage({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return _AuthScaffold(
+      showBack: true,
+      title: S.resetPasswordTitle,
+      subtitle: S.resetPasswordSubtitle,
+      child: Form(
+        key: controller.forgotForm,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            TextFormField(
+              controller: controller.resetEmail,
+              decoration: const InputDecoration(labelText: S.email),
+              keyboardType: TextInputType.emailAddress,
+              autofillHints: const [AutofillHints.email],
+              onFieldSubmitted: (_) => unawaited(controller.sendResetCode()),
+              validator: _email,
+            ),
+            const SizedBox(height: 16),
+            Obx(() => InlineError(controller.error.value)),
+            const SizedBox(height: 8),
+            _Submit(controller: controller, label: S.sendCode, onPressed: controller.sendResetCode),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class ResetPasswordPage extends GetView<AuthController> {
+  const ResetPasswordPage({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return _AuthScaffold(
+      showBack: true,
+      title: S.newPasswordTitle,
+      subtitle: S.newPasswordSubtitle(controller.pendingEmail),
+      child: Form(
+        key: controller.resetForm,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            TextFormField(
+              controller: controller.resetCode,
+              decoration: const InputDecoration(labelText: S.confirmationCode),
+              keyboardType: TextInputType.number,
+              autofillHints: const [AutofillHints.oneTimeCode],
+              textInputAction: TextInputAction.next,
+              validator: (v) => _required(v, S.enterCode),
+            ),
+            const SizedBox(height: 12),
+            TextFormField(
+              controller: controller.resetPassword,
+              decoration: const InputDecoration(
+                labelText: S.newPassword,
+                helperText: S.passwordHelper,
+                helperMaxLines: 2,
+              ),
+              obscureText: true,
+              autofillHints: const [AutofillHints.newPassword],
+              onFieldSubmitted: (_) => unawaited(controller.setNewPassword()),
+              validator: _password,
+              autovalidateMode: AutovalidateMode.onUserInteraction,
+            ),
+            const SizedBox(height: 12),
+            _Info(controller: controller),
+            Obx(() => InlineError(controller.error.value)),
+            const SizedBox(height: 8),
+            _Submit(controller: controller, label: S.setPasswordAndSignIn, onPressed: controller.setNewPassword),
+            const SizedBox(height: 8),
+            TextButton(onPressed: controller.resendResetCode, child: const Text(S.resendCode)),
           ],
         ),
       ),

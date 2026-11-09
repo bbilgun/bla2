@@ -1,7 +1,17 @@
 include: package:flutter_lints/flutter.yaml
 
 analyzer:
+  language:
+    strict-casts: true
+    strict-inference: true
+    strict-raw-types: true
   exclude:
     - build/**
     - android/**
     - ios/**
+
+linter:
+  rules:
+    # A Future nobody awaits hides its errors and its ordering. Await it, or say `unawaited(...)` on purpose.
+    unawaited_futures: true
+    discarded_futures: true

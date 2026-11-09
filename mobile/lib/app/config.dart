@@ -8,5 +8,8 @@ class AppConfig {
   static const userPoolId = String.fromEnvironment('COGNITO_USER_POOL_ID');
   static const clientId = String.fromEnvironment('COGNITO_CLIENT_ID');
 
+  /// Sentry crash reporting. Empty (the default) turns it off.
+  static const sentryDsn = String.fromEnvironment('SENTRY_DSN');
+
   static bool get isConfigured => apiUrl.isNotEmpty && userPoolId.isNotEmpty && clientId.isNotEmpty;
 }

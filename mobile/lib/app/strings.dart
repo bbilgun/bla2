@@ -24,6 +24,25 @@ abstract final class S {
   static const formerMember = 'Хуучин гишүүн';
   static const amount = 'Дүн';
   static const amountHint = 'Дүнгээ оруулна уу, жишээ нь 12.50';
+  static const edit = 'Засах';
+  static const delete = 'Устгах';
+  static const ok = 'Ойлголоо';
+  static const actionFailed = 'Амжилтгүй боллоо';
+  static const discardChangesTitle = 'Өөрчлөлтөө хаях уу?';
+  static const discardChangesBody = 'Хадгалаагүй өөрчлөлт устана.';
+  static const discard = 'Хаях';
+  static const keepEditing = 'Үргэлжлүүлэх';
+  static const fileTooLarge = 'Зураг хэт том байна. 10 МБ хүртэл зураг оруулна уу.';
+  static const uploadFailed = 'Зургийг байршуулж чадсангүй. Дахин оролдоно уу.';
+
+  // Photos (image_picker errors)
+  static const cameraPermissionDenied =
+      'Камер ашиглах зөвшөөрөл алга. Утасныхаа Тохиргоо → NetZero хэсэгт орж камерыг зөвшөөрнө үү.';
+  static const photosPermissionDenied =
+      'Зургийн санд хандах зөвшөөрөл алга. Утасныхаа Тохиргоо → NetZero хэсэгт орж зургийн санг зөвшөөрнө үү.';
+  static const noCamera = 'Энэ төхөөрөмжид камер алга. Зургийн сангаас сонгоно уу.';
+  static const couldNotOpenCamera = 'Камерыг нээж чадсангүй. Дахин оролдоно уу.';
+  static const couldNotOpenPhoto = 'Зургийг нээж чадсангүй. Өөр зураг сонгоно уу.';
 
   // ---------------------------------------------------------------- auth
   static const tagline = 'Хамтын зардлаа хувааж, тооцоогоо амархан хаа.';
@@ -35,12 +54,17 @@ abstract final class S {
   static const createAccountTitle = 'Бүртгэл үүсгэх';
   static const createAccountSubtitle = 'Найзууд тань энэ и-мэйлээр таныг бүлэгт нэмнэ.';
   static const yourName = 'Таны нэр';
-  static const passwordHelper = 'Дор хаяж 8 тэмдэгт, жижиг үсэг болон тоо орсон байх';
+  static const passwordHelper = 'Дор хаяж 10 тэмдэгт; жижиг үсэг, том үсэг, тоо орсон байх';
   static const enterValidEmail = 'Зөв и-мэйл хаяг оруулна уу';
   static const enterPassword = 'Нууц үгээ оруулна уу';
   static const enterName = 'Нэрээ оруулна уу';
-  static const passwordTooShort = 'Дор хаяж 8 тэмдэгт байх ёстой';
-  static const passwordNeedsLowerAndDigit = 'Жижиг үсэг болон тоо оруулна уу';
+  static const passwordTooShort = 'Дор хаяж 10 тэмдэгт байх ёстой';
+  static const lowercaseLetter = 'жижиг үсэг';
+  static const uppercaseLetter = 'том үсэг';
+  static const aDigit = 'тоо';
+
+  /// "Нууц үгэндээ том үсэг, тоо оруулна уу"
+  static String passwordNeeds(List<String> missing) => 'Нууц үгэндээ ${missing.join(', ')} оруулна уу';
   static const checkEmailTitle = 'И-мэйлээ шалгана уу';
   static String enterCodeSentTo(String email) => '$email хаяг руу илгээсэн кодыг оруулна уу.';
   static const confirmationCode = 'Баталгаажуулах код';
@@ -51,10 +75,24 @@ abstract final class S {
   static String newCodeSent(String email) => '$email хаяг руу шинэ код илгээлээ.';
   static const codeResent = 'Илгээлээ. Ирсэн захидал болон спам хавтсаа шалгана уу.';
 
+  // Forgot password
+  static const forgotPassword = 'Нууц үгээ мартсан уу?';
+  static const resetPasswordTitle = 'Нууц үг сэргээх';
+  static const resetPasswordSubtitle = 'И-мэйл хаягаа оруулбал нууц үг солих код илгээнэ.';
+  static const sendCode = 'Код илгээх';
+  static const newPasswordTitle = 'Шинэ нууц үг';
+  static String newPasswordSubtitle(String email) => '$email хаяг руу илгээсэн код болон шинэ нууц үгээ оруулна уу.';
+  static const newPassword = 'Шинэ нууц үг';
+  static const setPasswordAndSignIn = 'Нууц үг солиод нэвтрэх';
+  static String resetCodeSent(String email) => '$email хаяг руу нууц үг солих код илгээлээ.';
+
   // Cognito errors
   static const wrongEmailOrPassword = 'И-мэйл эсвэл нууц үг буруу байна.';
   static const accountExists = 'Энэ и-мэйлээр бүртгэл аль хэдийн үүссэн байна.';
-  static const passwordRules = 'Нууц үг дор хаяж 8 тэмдэгттэй, жижиг үсэг болон тоо агуулсан байх ёстой.';
+  static const passwordRules = 'Нууц үг дор хаяж 10 тэмдэгттэй, жижиг үсэг, том үсэг болон тоо агуулсан байх ёстой.';
+  static const noAccountForEmail = 'Энэ и-мэйлээр бүртгэл олдсонгүй.';
+  static const cannotResetUnverified = 'Энэ бүртгэлийн и-мэйл баталгаажаагүй тул нууц үгийг сэргээх боломжгүй.';
+  static const resetCodeExpired = 'Кодын хугацаа дууссан. "$resendCode" дээр дарж шинэ код аваарай.';
   static const codeMismatch = 'Код буруу байна. И-мэйлээ шалгаад дахин оролдоно уу.';
   static const codeExpired = 'Кодын хугацаа дууссан. "$resendCode" дээр дарна уу.';
   static const tooManyAttempts = 'Хэт олон удаа оролдлоо. Түр хүлээгээд дахин оролдоно уу.';
@@ -64,6 +102,7 @@ abstract final class S {
 
   // ---------------------------------------------------------------- groups
   static const signOut = 'Гарах';
+  static const account = 'Миний бүртгэл';
   static const newGroup = 'Шинэ бүлэг';
   static const groupName = 'Нэр';
   static const groupNameHint = 'Байр, аялал, оройн хоол…';
@@ -71,12 +110,37 @@ abstract final class S {
   static const giveGroupName = 'Бүлгийн нэрээ оруулна уу';
   static const couldNotCreateGroup = 'Бүлэг үүсгэж чадсангүй';
   static const noGroupsYet = 'Одоогоор бүлэг алга';
-  static const noGroupsHint = 'Байр, аялал эсвэл оройн хоолонд зориулж бүлэг үүсгээд, хүмүүсээ и-мэйлээр нь нэмээрэй.';
+  static const noGroupsHint = 'Байр, аялал эсвэл оройн хоолонд зориулж бүлэг үүсгээд, хүмүүсээ и-мэйлээр нь уриарай.';
+  static const groupNameTooLong = 'Нэр 80 тэмдэгтээс урт байж болохгүй';
+
+  // Invites to me
+  static const invitesTitle = 'Урилгууд';
+  static String inviteMeta(String inviter, int members) => 'Урьсан: $inviter · $members гишүүн';
+  static const accept = 'Нэгдэх';
+  static const decline = 'Татгалзах';
+  static const joinedGroup = 'Бүлэгт нэгдлээ';
+  static const inviteDeclined = 'Урилгаас татгалзлаа';
 
   // ---------------------------------------------------------------- group detail
-  static const addMember = 'Гишүүн нэмэх';
+  static const inviteByEmail = 'И-мэйлээр урих';
   static const memberEmail = 'Гишүүний и-мэйл';
-  static const addMemberHelper = 'Тэр хүн NetZero-д дор хаяж нэг удаа нэвтэрсэн байх ёстой.';
+  static const inviteHelper = 'Тэр хүн энэ и-мэйлээр NetZero-д бүртгүүлж нэвтэрмэгц урилгаа харна.';
+  static const invite = 'Урих';
+  static String inviteSent(String email) => 'Урилга илгээлээ: $email';
+  static const pendingInvites = 'Хүлээгдэж буй урилга';
+  static const cancelInvite = 'Урилга цуцлах';
+  static const members = 'Гишүүд';
+  static const removeMember = 'Бүлгээс хасах';
+  static String removeMemberQuestion(String name) => 'Энэ гишүүнийг бүлгээс хасах уу? ($name)';
+  static const removeBlocked = 'Энэ гишүүний тооцоо тэглэгдээгүй байна. Эхлээд тооцоогоо хаана уу.';
+  static const leaveGroup = 'Бүлгээс гарах';
+  static const leaveGroupQuestion = 'Энэ бүлгээс гарах уу? Дахин нэгдэхэд урилга хэрэгтэй болно.';
+  static const leaveBlocked = 'Таны тооцоо тэглэгдээгүй байна. Гарахын өмнө тооцоогоо хаана уу.';
+  static const leftGroup = 'Бүлгээс гарлаа';
+  static const renameGroup = 'Нэр солих';
+  static const deleteGroup = 'Бүлэг устгах';
+  static const deleteGroupQuestion = 'Энэ бүлгийг бүх гишүүнд нь устгах уу? Буцаах боломжгүй.';
+  static const groupDeleted = 'Бүлэг устлаа';
   static const addExpense = 'Зардал нэмэх';
   static const couldNotLoadGroup = 'Бүлгийг ачаалж чадсангүй.';
   static const expenses = 'Зардлууд';
@@ -96,7 +160,7 @@ abstract final class S {
   static const getsBack = 'авна';
   static const owes = 'өгнө';
   static const settleUp = 'Тооцоо хаах';
-  static const nothingToSettle = 'Хаах тооцоо алга';
+  static const paymentHistory = 'Төлбөрийн түүх';
 
   // Expense row
   static String paid(String payer, String amount) => '$payer $amount төлсөн';
@@ -126,6 +190,9 @@ abstract final class S {
   static String sharesMustAddUpTo(String amount) => 'Хуваалтын нийлбэр $amount байх ёстой';
   static const percentMustBe100 = 'Хувийн нийлбэр 100% байх ёстой';
   static const saveOffline = 'Холболт тасарлаа. "$save" товчийг дахин дарна уу. Зардал давхар бүртгэгдэхгүй.';
+  static const reenterPercents = 'Хуучин хувийг хадгалдаггүй тул хувиа дахин оруулна уу.';
+  static String exactShareFor(String name) => '$name: дүн';
+  static String percentShareFor(String name) => '$name: хувь';
 
   // ---------------------------------------------------------------- expense
   static const expense = 'Зардал';
@@ -138,6 +205,15 @@ abstract final class S {
   static const uploading = 'Байршуулж байна…';
   static const noReceiptYet = 'Баримт хавсаргаагүй байна';
   static const couldNotLoadReceipt = 'Ачаалж чадсангүй. Дахин оролдох';
+  static const editExpense = 'Зардал засах';
+  static const deleteExpense = 'Зардал устгах';
+  static const deleteExpenseQuestion = 'Энэ зардлыг устгах уу? Хүн бүрийн тооцоо шинэчлэгдэнэ.';
+  static const expenseDeleted = 'Зардал устлаа';
+  static const expenseSaved = 'Зардал хадгалагдлаа';
+  static const expenseChangedTitle = 'Зардал өөрчлөгдсөн байна';
+  static const expenseChanged =
+      'Таныг засаж байх хооронд өөр хүн энэ зардлыг өөрчилсөн байна. Шинэ мэдээллийг ачааллаа, шалгаад дахин засна уу.';
+  static String editedBy(String name, String date) => 'Зассан: $name · $date';
 
   // ---------------------------------------------------------------- settle up
   static const everyoneSettled = 'Бүх хүний тооцоо тэнцүү байна.';
@@ -152,6 +228,9 @@ abstract final class S {
   static const paymentRecorded = 'Төлбөр бүртгэгдлээ';
   static String paymentFrom(String name, String amount) => '$name: $amount';
   static const recordOffline = 'Холболт тасарлаа. Дахин оролдоно уу. Төлбөр давхар бүртгэгдэхгүй.';
+  static const deletePayment = 'Төлбөр устгах';
+  static const deletePaymentQuestion = 'Энэ бүртгэсэн төлбөрийг устгах уу? Хүн бүрийн тооцоо шинэчлэгдэнэ.';
+  static const paymentDeleted = 'Төлбөр устлаа';
 
   // ---------------------------------------------------------------- home tabs
   static const tabGroups = 'Бүлгүүд';
@@ -229,6 +308,29 @@ abstract final class S {
   static const closedBanner = 'Тооцоо хаагдсан. Зочид сонголтоо өөрчлөх боломжгүй, гэхдээ төлбөрөө тэмдэглэж болно.';
   static String paidOf(int paid, int count) => '$paid/$count төлсөн';
   static String transferNote(String code) => 'Гүйлгээний утга: $code + нэр';
+  static String paidShort(String amount) => 'Төлсөн: $amount';
+  static String stillOwes(String amount) => 'Дутуу: $amount';
+  static String paidTooMuch(String amount) => 'Илүү төлсөн: $amount';
+  static const deleteBill = 'Тооцоо устгах';
+  static const deleteBillQuestion = 'Энэ тооцоог устгах уу? QR холбоос ажиллахаа болино. Буцаах боломжгүй.';
+  static const billDeleted = 'Тооцоо устлаа';
+  static const newLink = 'Шинэ холбоос';
+  static const newLinkQuestion = 'Шинэ холбоос үүсгэх үү?';
+  static const newLinkWarning =
+      'Хуучин QR код болон холбоос ажиллахаа болино. Шинэ QR кодоо зочиддоо дахин уншуулах эсвэл илгээх хэрэгтэй.';
+  static const newLinkCreated = 'Шинэ холбоос үүслээ';
+  static const reopenToEdit = 'Тооцоо хаагдсан байна. Засварыг хадгалахын тулд эхлээд "$reopenBill" дарна уу.';
+
+  // ---------------------------------------------------------------- account
+  static const accountTitle = 'Миний бүртгэл';
+  static const deleteAccount = 'Бүртгэл устгах';
+  static const deleteAccountQuestion = 'Бүртгэлээ устгах уу?';
+  static const deleteAccountWarning =
+      'Таныг бүх бүлгээс гаргаж, таны үүсгэсэн тооцоонууд болон бүртгэлийг бүрмөсөн устгана. Буцаах боломжгүй.';
+  static String deleteAccountBlocked(List<String> groups) =>
+      'Дараах бүлгүүдэд таны тооцоо тэглэгдээгүй байна: ${groups.join(', ')}. Эхлээд тооцоогоо хаана уу.';
+  static const accountDeleted = 'Бүртгэл устлаа';
+  static const emailNotVerified = 'И-мэйл хаяг тань баталгаажаагүй тул бүлгийн урилга танд ирэхгүй.';
 
   // ---------------------------------------------------------------- dates
   /// "11-р сарын 5"
@@ -246,13 +348,24 @@ abstract final class S {
     'NETWORK' => noConnection,
     'UNAUTHORIZED' => sessionExpired,
     'GROUP_NOT_FOUND' => 'Бүлэг олдсонгүй.',
-    'USER_NOT_FOUND' => 'Энэ и-мэйлтэй хэрэглэгч олдсонгүй. Тэр хүн NetZero-д нэг удаа нэвтэрсэн байх ёстой.',
     'EXPENSE_NOT_FOUND' => expenseNotFound,
     'RECEIPT_NOT_FOUND' => 'Баримт олдсонгүй.',
     'PAYER_NOT_MEMBER' => 'Төлсөн хүн энэ бүлгийн гишүүн биш байна.',
     'SPLIT_USER_NOT_MEMBER' => 'Хуваалтад бүлгийн гишүүн биш хүн орсон байна.',
     'SETTLEMENT_USER_NOT_MEMBER' => 'Төлбөрийн оролцогч бүлгийн гишүүн биш байна.',
-    'NOT_A_PARTY' => 'Та зөвхөн өөрийн оролцсон төлбөрийг бүртгэх боломжтой.',
+    'NOT_A_PARTY' => 'Та зөвхөн өөрийн оролцсон төлбөрийг бүртгэх, устгах боломжтой.',
+    'EXPENSE_CHANGED' => expenseChanged,
+    'SETTLEMENT_NOT_FOUND' => 'Төлбөр олдсонгүй. Өөр хүн устгасан байж магадгүй.',
+    'BALANCE_NOT_ZERO' => 'Тооцоо тэглэгдээгүй байна. Эхлээд тооцоогоо хаана уу.',
+    'BALANCES_NOT_ZERO' => 'Тэглэгдээгүй тооцоо байна. Эхлээд бүх тооцоогоо хаана уу.',
+    'INVITE_NOT_FOUND' => 'Урилга олдсонгүй. Цуцлагдсан эсвэл аль хэдийн ашиглагдсан байж магадгүй.',
+    'ALREADY_MEMBER' => 'Энэ и-мэйлтэй хүн аль хэдийн бүлгийн гишүүн байна.',
+    'GROUP_FULL' => 'Нэг бүлэгт гишүүд болон урилга нийлээд 50-аас хэтрэх боломжгүй.',
+    'CANNOT_REMOVE_SELF' => 'Өөрийгөө хасах боломжгүй. "$leaveGroup" товчийг ашиглана уу.',
+    'MEMBER_NOT_FOUND' => 'Гишүүн олдсонгүй. Аль хэдийн хасагдсан байж магадгүй.',
+    'INVALID_UPLOAD_KEY' || 'UPLOAD_NOT_FOUND' => 'Зураг бүрэн байршсангүй. Дахин оролдоно уу.',
+    'FILE_TOO_LARGE' => fileTooLarge,
+    'UPLOAD_FAILED' => uploadFailed,
     'IDEMPOTENCY_KEY_REUSED' => 'Энэ хүсэлт өөр мэдээлэлтэйгээр аль хэдийн илгээгдсэн байна. Дахин оролдоно уу.',
     'VALIDATION_ERROR' => 'Оруулсан мэдээллээ шалгана уу.',
     'INVALID_AMOUNT' => 'Дүн буруу байна.',
@@ -262,10 +375,9 @@ abstract final class S {
     'SPLIT_PERCENT_MISMATCH' => percentMustBe100,
     'SPLIT_SUM_MISMATCH' => 'Хуваалтын нийлбэр нийт дүнтэй тэнцүү байх ёстой.',
     'BILL_NOT_FOUND' => 'Тооцоо олдсонгүй.',
-    'BILL_CLOSED' => 'Тооцоо хаагдсан байна.',
+    'BILL_CLOSED' => reopenToEdit,
     'BILL_FULL' => 'Нэг тооцоонд 50-аас олон хүн нэгдэх боломжгүй.',
     'GUEST_NOT_FOUND' => 'Зочин олдсонгүй.',
-    'UNKNOWN_ITEM' => 'Тооцоонд байхгүй зүйл сонгогдсон байна.',
     'CANNOT_REMOVE_HOST' => 'Тооцоог төлсөн хүнийг хасах боломжгүй.',
     _ => somethingWentWrong,
   };

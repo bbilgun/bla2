@@ -1,6 +1,6 @@
-// Renders the main screens with sample data to PNGs, for design review without a device:
+// Renders the main screens with sample data to tool/screens/*.png, for design review without a device:
 //   flutter test --update-goldens tool/screens_test.dart
-// Output: tool/screens/*.png (git-ignored). Text uses Roboto here; on iPhone the app uses SF Pro.
+// The PNGs are git-ignored. Text renders in Roboto here, while an iPhone uses SF Pro.
 import 'dart:io';
 
 import 'package:flutter/material.dart' hide Split;
@@ -25,6 +25,7 @@ import 'package:netzero/services/auth_service.dart';
 
 const me = 'me';
 
+/// Signed in as [me], with no expired-session notice.
 class FakeAuth extends GetxService implements AuthService {
   @override
   String? userId = me;
@@ -42,9 +43,12 @@ const members = [
   Member(userId: 'bat', email: 'bat@x.mn', name: 'Бат'),
   Member(userId: 'saraa', email: 'saraa@x.mn', name: 'Сараа'),
 ];
+
+/// A group of the three sample members.
 Group group(String id, String name, [String currency = 'MNT']) =>
     Group(id: id, name: name, currency: currency, members: members, createdAt: now);
 
+/// Three groups, with balances where everyone owes [me].
 class FakeGroups implements GroupsRepository {
   @override
   Future<CursorPage<Group>> list({String? cursor, int limit = 50}) async => CursorPage(
@@ -73,26 +77,28 @@ class FakeGroups implements GroupsRepository {
   dynamic noSuchMethod(Invocation invocation) => throw UnimplementedError();
 }
 
+/// Four household expenses split evenly.
 class FakeExpenses implements ExpensesRepository {
   @override
   Future<ExpensePage> list(String groupId, {String? cursor, int limit = 20}) async {
-    Expense e(String id, String d, int amount, String paidBy, int day, {bool receipt = false}) => Expense(
-      id: id,
-      groupId: groupId,
-      description: d,
-      amountCents: amount,
-      paidBy: paidBy,
-      splitType: SplitType.even,
-      splits: [for (final m in members) Split(userId: m.userId, amountCents: amount ~/ 3)],
-      hasReceipt: receipt,
-      createdAt: DateTime(2026, 11, day, 12),
-    );
+    Expense expense(String id, String description, int amount, String paidBy, int day, {bool receipt = false}) =>
+        Expense(
+          id: id,
+          groupId: groupId,
+          description: description,
+          amountCents: amount,
+          paidBy: paidBy,
+          splitType: SplitType.even,
+          splits: [for (final member in members) Split(userId: member.userId, amountCents: amount ~/ 3)],
+          hasReceipt: receipt,
+          createdAt: DateTime(2026, 11, day, 12),
+        );
     return ExpensePage(
       items: [
-        e('e1', 'Хүнсний дэлгүүр', 18_600_000, me, 5, receipt: true),
-        e('e2', 'Цахилгааны төлбөр', 9_000_000, 'bat', 3),
-        e('e3', 'Интернэт', 4_500_000, me, 1),
-        e('e4', 'Такси', 2_400_000, 'saraa', 1),
+        expense('e1', 'Хүнсний дэлгүүр', 18_600_000, me, 5, receipt: true),
+        expense('e2', 'Цахилгааны төлбөр', 9_000_000, 'bat', 3),
+        expense('e3', 'Интернэт', 4_500_000, me, 1),
+        expense('e4', 'Такси', 2_400_000, 'saraa', 1),
       ],
       nextCursor: null,
     );
@@ -102,6 +108,7 @@ class FakeExpenses implements ExpensesRepository {
   dynamic noSuchMethod(Invocation invocation) => throw UnimplementedError();
 }
 
+/// One pending invite.
 class FakeInvites implements InvitesRepository {
   @override
   Future<List<PendingInvite>> list() async => [
@@ -120,6 +127,7 @@ class FakeInvites implements InvitesRepository {
   dynamic noSuchMethod(Invocation invocation) => throw UnimplementedError();
 }
 
+/// The signed-in user's profile.
 class FakeUsers implements UserRepository {
   @override
   Future<Me> me() async => const Me(userId: 'me', email: 'b@x.mn', name: 'Билгүүн');
@@ -128,6 +136,7 @@ class FakeUsers implements UserRepository {
   dynamic noSuchMethod(Invocation invocation) => throw UnimplementedError();
 }
 
+/// A dinner bill with two guests: one partly paid, one paid in full.
 Bill sampleBill() => Bill.fromJson({
   'id': 'b1',
   'code': '7KQ2HM',
@@ -194,6 +203,7 @@ Bill sampleBill() => Bill.fromJson({
   'createdAt': '2026-11-05T10:00:00.000Z',
 });
 
+/// Two bills in the list, and [sampleBill] for any id.
 class FakeBills implements BillsRepository {
   @override
   Future<CursorPage<BillSummary>> list({String? cursor, int limit = 20}) async => CursorPage(
@@ -229,12 +239,13 @@ class FakeBills implements BillsRepository {
   dynamic noSuchMethod(Invocation invocation) => throw UnimplementedError();
 }
 
+/// Loads Roboto and the Material icons from the Flutter SDK, since tests otherwise draw boxes for text.
 Future<void> loadFonts() async {
   final flutterRoot = Platform.environment['FLUTTER_ROOT'] ?? '/Users/bilguun/development/flutter';
   final dir = '$flutterRoot/bin/cache/artifacts/material_fonts';
   final roboto = FontLoader('Roboto');
-  for (final w in ['Light', 'Regular', 'Medium', 'Bold', 'Black']) {
-    roboto.addFont(Future.value(ByteData.sublistView(File('$dir/Roboto-$w.ttf').readAsBytesSync())));
+  for (final weight in ['Light', 'Regular', 'Medium', 'Bold', 'Black']) {
+    roboto.addFont(Future.value(ByteData.sublistView(File('$dir/Roboto-$weight.ttf').readAsBytesSync())));
   }
   await roboto.load();
   final icons = FontLoader('MaterialIcons')
@@ -242,6 +253,7 @@ Future<void> loadFonts() async {
   await icons.load();
 }
 
+/// Renders [page] at iPhone 15 size and compares it with tool/screens/[name].png.
 Future<void> shoot(WidgetTester tester, String name, Widget page, {Brightness brightness = Brightness.light}) async {
   tester.view.physicalSize = const Size(393 * 2, 852 * 2);
   tester.view.devicePixelRatio = 2;
@@ -259,6 +271,7 @@ Future<void> shoot(WidgetTester tester, String name, Widget page, {Brightness br
       ),
     ),
   );
+  // Give the fake loads time to finish and the animations time to settle.
   for (var i = 0; i < 6; i++) {
     await tester.pump(const Duration(milliseconds: 300));
   }
@@ -298,8 +311,8 @@ void main() {
   });
 
   testWidgets('bill detail', (tester) async {
-    final c = Get.put(BillDetailController('b1', FakeBills(), pollEvery: const Duration(days: 1)));
+    final controller = Get.put(BillDetailController('b1', FakeBills(), pollEvery: const Duration(days: 1)));
     await shoot(tester, '5-bill', const BillDetailPage());
-    c.onClose();
+    controller.onClose();
   });
 }

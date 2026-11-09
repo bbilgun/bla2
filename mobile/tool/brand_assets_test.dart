@@ -1,5 +1,5 @@
-// Renders the brand mark (lib/app/brand.dart) to the PNGs the app icon and the QR code use.
-// Run after changing the mark:
+// Renders the mark from lib/app/brand.dart to the PNGs used for the app icon and the bill QR code.
+// Run it after changing the mark:
 //   flutter test tool/brand_assets_test.dart && dart run flutter_launcher_icons
 import 'dart:io';
 import 'dart:ui' as ui;
@@ -21,15 +21,15 @@ Future<void> _export(String path, CustomPainter painter, int size) async {
 void main() {
   testWidgets('export brand PNGs', (tester) async {
     await tester.runAsync(() async {
-      // iOS: edge to edge, the system rounds the corners.
+      // iOS draws the icon edge to edge and rounds the corners itself.
       await _export('assets/brand/icon.png', const NetZeroMarkPainter(shape: MarkShape.fullBleed), 1024);
-      // Android adaptive icon: symbol only, small enough for the launcher's centre-crop.
+      // Android's adaptive icon gets the symbol alone, small enough to survive the launcher's crop.
       await _export(
         'assets/brand/icon-foreground.png',
         const NetZeroMarkPainter(shape: MarkShape.none, glyphScale: 0.62),
         1024,
       );
-      // In-app use (the centre of the bill QR code).
+      // The logo in the middle of the bill QR code.
       await _export('assets/brand/mark.png', const NetZeroMarkPainter(), 256);
     });
     expect(File('assets/brand/icon.png').existsSync(), isTrue);

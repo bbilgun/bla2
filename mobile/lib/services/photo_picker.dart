@@ -1,27 +1,34 @@
+// Picking a photo from the camera or gallery for receipts and bank QR codes.
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../app/strings.dart';
 
-/// A photo picked for upload.
+/// A photo ready to upload.
 class PickedPhoto {
   const PickedPhoto({required this.bytes, required this.contentType});
 
+  /// The encoded image file.
   final List<int> bytes;
+
+  /// MIME type, such as `image/jpeg`.
   final String contentType;
 }
 
-/// The person can't pick a photo right now (permission denied, no camera). [message] says what to do.
+/// The user can't pick a photo right now, for example because permission was denied.
+/// [message] tells them what to do about it.
 class PhotoPickException implements Exception {
   const PhotoPickException(this.message);
 
+  /// Mongolian text for the user.
   final String message;
 
   @override
   String toString() => message;
 }
 
-/// "receipt.PNG" -> "image/png". Phones hand us JPEG, PNG or HEIC; anything else is sent as JPEG.
+/// Guesses the MIME type from a file name, so "receipt.PNG" gives "image/png". Phones give us JPEG,
+/// PNG or HEIC, and anything else is sent as JPEG.
 String imageContentType(String filename) {
   final name = filename.toLowerCase();
   if (name.endsWith('.png')) return 'image/png';
@@ -29,14 +36,14 @@ String imageContentType(String filename) {
   return 'image/jpeg';
 }
 
-/// Wraps image_picker: returns bytes and content type, and turns its PlatformExceptions
-/// (permission denied, no camera) into a Mongolian message instead of a crash.
+/// A small wrapper around image_picker that returns bytes and a content type, and turns platform
+/// errors into a [PhotoPickException] with a Mongolian message.
 class PhotoPicker {
   PhotoPicker([ImagePicker? picker]) : _picker = picker ?? ImagePicker();
 
   final ImagePicker _picker;
 
-  /// Null when the person backs out without choosing.
+  /// Opens the camera or gallery. Returns null if the user backs out without choosing.
   Future<PickedPhoto?> pick(ImageSource source, {double maxWidth = 2000, int imageQuality = 80}) async {
     final XFile? file;
     try {
@@ -48,6 +55,7 @@ class PhotoPicker {
     return PickedPhoto(bytes: await file.readAsBytes(), contentType: imageContentType(file.name));
   }
 
+  /// The message for an image_picker error [code].
   static String messageFor(String code, ImageSource source) => switch (code) {
     'camera_access_denied' || 'camera_access_restricted' => S.cameraPermissionDenied,
     'photo_access_denied' => S.photosPermissionDenied,

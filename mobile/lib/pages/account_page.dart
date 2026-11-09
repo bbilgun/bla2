@@ -1,3 +1,4 @@
+// The account page: profile, sign out and delete account.
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -7,18 +8,18 @@ import '../app/strings.dart';
 import '../controllers/account_controller.dart';
 import 'widgets.dart';
 
-/// Who I am, sign out, and delete my account.
+/// Shows who is signed in, with buttons to sign out and to delete the account.
 class AccountPage extends GetView<AccountController> {
   const AccountPage({super.key});
 
   Future<void> _delete(BuildContext context) async {
-    final ok = await confirmAction(
+    final confirmed = await confirmAction(
       context,
       title: S.deleteAccountQuestion,
       message: S.deleteAccountWarning,
       confirmLabel: S.deleteAccount,
     );
-    if (!ok) return;
+    if (!confirmed) return;
     final message = await controller.deleteAccount();
     if (message != null && context.mounted) await showMessage(context, title: S.deleteAccount, message: message);
   }

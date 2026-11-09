@@ -1,3 +1,4 @@
+// Editing an expense in the form, and the expense page's reload and delete.
 import 'package:flutter_test/flutter_test.dart';
 import 'package:get/get.dart';
 import 'package:netzero/app/strings.dart';
@@ -9,6 +10,7 @@ import 'package:netzero/repositories/repositories.dart';
 
 import 'fakes.dart';
 
+/// A receipts repository for tests that never touch receipts.
 class NoReceipts implements ReceiptsRepository {
   @override
   dynamic noSuchMethod(Invocation invocation) => throw UnimplementedError();
@@ -36,27 +38,29 @@ void main() {
     expenses = FakeExpenses([exactExpense]);
   });
 
-  AddExpenseController editing(Expense e) =>
-      AddExpenseController(group: groupOf(), myUserId: 'a', expenses: expenses, existing: e);
+  AddExpenseController editing(Expense expense) =>
+      AddExpenseController(group: groupOf(), myUserId: 'a', expenses: expenses, existing: expense);
 
   group('the form in edit mode', () {
-    test('is filled from the expense, and is not "dirty" until something changes', () {
-      final c = editing(exactExpense);
-      expect(c.isEditing, isTrue);
-      expect(c.description.text, 'Dinner');
-      expect(c.amount.text, '100.00');
-      expect(c.splitType.value, SplitType.exact);
-      expect(c.exactCtrls['a']!.text, '70.00');
-      expect(c.exactCtrls['b']!.text, '30.00');
-      expect(c.exactCtrls['c']!.text, '');
-      expect(c.isDirty, isFalse);
+    test('is filled from the expense and stays clean until something changes', () {
+      final form = editing(exactExpense);
 
-      c.description.text = 'Dinner and drinks';
-      expect(c.isDirty, isTrue);
+      expect(form.isEditing, isTrue);
+      expect(form.description.text, 'Dinner');
+      expect(form.amount.text, '100.00');
+      expect(form.splitType.value, SplitType.exact);
+      expect(form.exactFields['a']!.text, '70.00');
+      expect(form.exactFields['b']!.text, '30.00');
+      expect(form.exactFields['c']!.text, '');
+      expect(form.isDirty, isFalse);
+
+      form.description.text = 'Dinner and drinks';
+
+      expect(form.isDirty, isTrue);
     });
 
-    test('an EVEN expense ticks only the people who were in it', () {
-      final c = editing(
+    test('an even split ticks only the people who were in it', () {
+      final form = editing(
         expenseOf(
           'e2',
           splits: const [
@@ -65,96 +69,118 @@ void main() {
           ],
         ),
       );
-      expect(c.included, {'a', 'c'});
+
+      expect(form.included, {'a', 'c'});
     });
 
-    test('a PERCENT expense asks for the percents again (the server returns amounts only)', () {
-      final c = editing(expenseOf('e3', splitType: SplitType.percent));
-      expect(c.mustReenterPercents, isTrue);
-      expect(c.percentCtrls.values.map((t) => t.text), everyElement(isEmpty));
+    test('a percent split asks for the percentages again', () {
+      final form = editing(expenseOf('e3', splitType: SplitType.percent));
+
+      expect(form.mustReenterPercents, isTrue);
+      expect(form.percentFields.values.map((field) => field.text), everyElement(isEmpty));
     });
 
-    test('save sends PUT with the edited version and no Idempotency-Key', () async {
-      final c = editing(exactExpense);
-      c.description.text = 'Dinner and drinks';
-      final saved = await c.save();
+    test('saving sends a PUT with the edited version and no Idempotency-Key', () async {
+      final form = editing(exactExpense);
+      form.description.text = 'Dinner and drinks';
+
+      final saved = await form.save();
+
       expect(saved?.version, 4);
       final update = expenses.updates.single;
       expect(update.id, 'e1');
       expect(update.version, 3);
       expect(update.body['description'], 'Dinner and drinks');
       expect((update.body['split'] as Map)['type'], 'EXACT');
-      expect(c.pendingIdempotencyKey, isNull);
-      expect(c.isDirty, isFalse); // saved: leaving doesn't ask
+      expect(form.pendingIdempotencyKey, isNull);
+      expect(form.isDirty, isFalse);
     });
 
-    test('EXPENSE_CHANGED: marked outdated with the explanation, nothing saved', () async {
-      final c = editing(exactExpense);
+    test('a conflicting edit marks the form outdated and saves nothing', () async {
+      final form = editing(exactExpense);
       expenses.failUpdate = apiError('EXPENSE_CHANGED');
-      expect(await c.save(), isNull);
-      expect(c.outdated, isTrue);
-      expect(c.error.value, 'EXPENSE_CHANGED');
+
+      final saved = await form.save();
+
+      expect(saved, isNull);
+      expect(form.outdated, isTrue);
+      expect(form.error.value, 'EXPENSE_CHANGED');
     });
 
-    test('offline: the same edit can simply be sent again', () async {
-      final c = editing(exactExpense);
+    test('an edit that failed offline can be sent again as is', () async {
+      final form = editing(exactExpense);
       expenses.failUpdate = networkError();
-      expect(await c.save(), isNull);
-      expect(c.error.value, S.saveOffline);
-      expect(c.outdated, isFalse);
-      expect(await c.save(), isNotNull);
-      expect(expenses.updates.map((u) => u.version), [3, 3]);
+
+      expect(await form.save(), isNull);
+      expect(form.error.value, S.saveOffline);
+      expect(form.outdated, isFalse);
+
+      expect(await form.save(), isNotNull);
+      expect(expenses.updates.map((update) => update.version), [3, 3]);
     });
   });
 
   group('the expense page', () {
     late GroupDetailController detail;
-    late ExpenseController c;
+    late ExpenseController controller;
+
+    ExpenseController open(String expenseId) => ExpenseController(detail, expenseId, NoReceipts(), expenses)..onInit();
 
     setUp(() async {
       expenses = FakeExpenses([for (var i = 1; i <= 5; i++) expenseOf('e$i')]);
       detail = GroupDetailController('g1', FakeGroups(), expenses, myUserId: () => 'a');
-      await detail.load(); // e1, e2 loaded
+      // The first page holds e1 and e2.
+      await detail.load();
     });
 
-    test('backing out of the editor (or EXPENSE_CHANGED) reloads, even an expense beyond the first page', () async {
+    test('reloading finds the newest version even beyond the first page', () async {
       await detail.loadMore();
-      c = ExpenseController(detail, 'e3', NoReceipts(), expenses)..onInit();
+      controller = open('e3');
       expenses.all = [
-        for (final e in expenses.all) e.id == 'e3' ? expenseOf('e3', description: 'Changed', version: 2) : e,
+        for (final expense in expenses.all)
+          expense.id == 'e3' ? expenseOf('e3', description: 'Changed', version: 2) : expense,
       ];
-      await c.reload();
-      expect(c.expense?.description, 'Changed');
-      expect(c.expense?.version, 2);
+
+      await controller.reload();
+
+      expect(controller.expense?.description, 'Changed');
+      expect(controller.expense?.version, 2);
     });
 
-    test('reload notices it was deleted', () async {
-      c = ExpenseController(detail, 'e2', NoReceipts(), expenses)..onInit();
-      expenses.all = [...expenses.all.where((e) => e.id != 'e2')];
-      await c.reload();
-      expect(c.expense, isNull);
+    test('reloading notices the expense was deleted', () async {
+      controller = open('e2');
+      expenses.all = [...expenses.all.where((expense) => expense.id != 'e2')];
+
+      await controller.reload();
+
+      expect(controller.expense, isNull);
     });
 
-    test('delete removes it from the group list and refreshes', () async {
-      c = ExpenseController(detail, 'e1', NoReceipts(), expenses)..onInit();
-      expect(await c.delete(), isTrue);
+    test('deleting removes it from the group list', () async {
+      controller = open('e1');
+
+      expect(await controller.delete(), isTrue);
+
       expect(expenses.deletes, ['e1']);
-      expect(detail.expenses.map((e) => e.id), isNot(contains('e1')));
+      expect(detail.expenses.map((expense) => expense.id), isNot(contains('e1')));
       expect(shown, contains(S.expenseDeleted));
     });
 
     test('deleting one someone else already deleted counts as done', () async {
-      c = ExpenseController(detail, 'e1', NoReceipts(), expenses)..onInit();
+      controller = open('e1');
       expenses.failDelete = apiError('EXPENSE_NOT_FOUND', status: 404);
-      expect(await c.delete(), isTrue);
+
+      expect(await controller.delete(), isTrue);
     });
 
-    test('a failed delete keeps it and says why', () async {
-      c = ExpenseController(detail, 'e1', NoReceipts(), expenses)..onInit();
+    test('a failed delete keeps the expense and says why', () async {
+      controller = open('e1');
       expenses.failDelete = networkError();
-      expect(await c.delete(), isFalse);
-      expect(c.error.value, 'offline');
-      expect(c.expense, isNotNull);
+
+      expect(await controller.delete(), isFalse);
+
+      expect(controller.error.value, 'offline');
+      expect(controller.expense, isNotNull);
     });
   });
 }

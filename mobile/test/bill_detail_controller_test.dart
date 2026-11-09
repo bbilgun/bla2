@@ -1,3 +1,4 @@
+// BillDetailController: optimistic ticks, polling against writes, and when polling pauses.
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:get/get.dart';
@@ -19,117 +20,140 @@ void main() {
   group('host ticks', () {
     test('a failed request rolls the ticks back to what the server last said', () async {
       final bills = SlowBills()..failWith = networkError();
-      final c = BillDetailController('b1', bills);
-      c.bill.value = Bill.fromJson(billJson()); // the host has i1
+      final controller = BillDetailController('b1', bills);
+      // The host starts with i1 ticked.
+      controller.bill.value = Bill.fromJson(billJson());
 
-      final done = c.toggleMine('i2');
-      expect(c.myItemIds, {'i1', 'i2'}); // optimistic
+      final toggling = controller.toggleMine('i2');
+
+      expect(controller.myItemIds, {'i1', 'i2'});
+
       bills.releaseNext();
-      await done;
+      await toggling;
 
-      expect(c.myItemIds, {'i1'}); // rolled back
-      expect(c.pendingMine.value, isNull);
-      expect(c.isBusy(Bill.hostGuestId), isFalse);
+      expect(controller.myItemIds, {'i1'});
+      expect(controller.pendingMine.value, isNull);
+      expect(controller.isBusy(Bill.hostGuestId), isFalse);
       expect(shown.single, startsWith(S.somethingWentWrong));
     });
   });
 
-  group('polling vs writes', () {
+  group('polling and writes', () {
     late PollingBills bills;
-    late BillDetailController c;
+    late BillDetailController controller;
 
     setUp(() {
       bills = PollingBills();
-      c = BillDetailController('b1', bills);
-      c.bill.value = Bill.fromJson(billJson());
-      c.loading.value = false;
+      controller = BillDetailController('b1', bills);
+      controller.bill.value = Bill.fromJson(billJson());
+      controller.loading.value = false;
     });
 
     test("a poll that started before a write can't overwrite the write's result", () async {
-      final poll = c.poll(); // reads the bill as it was before the write
-      final guest = c.bill.value!.others.single;
-      await c.setPaid(guest, false);
-      expect(c.bill.value!.others.single.paidCents, 0);
+      // This poll reads the bill as it was before the write below.
+      final poll = controller.poll();
+      final guest = controller.bill.value!.others.single;
 
-      bills.answerGet(Bill.fromJson(billJson(guestPaidCents: 1500000))); // stale: still paid
+      await controller.setPaid(guest, false);
+
+      expect(controller.bill.value!.others.single.paidCents, 0);
+
+      // The stale answer still has the guest as paid.
+      bills.answerGet(Bill.fromJson(billJson(guestPaidCents: 1500000)));
       await poll;
-      expect(c.bill.value!.others.single.paidCents, 0);
+
+      expect(controller.bill.value!.others.single.paidCents, 0);
     });
 
     test('a poll answering with an older updatedAt is dropped', () async {
-      c.bill.value = Bill.fromJson(billJson(updatedAt: '2026-11-05T10:05:00.000Z'));
-      final poll = c.poll();
+      controller.bill.value = Bill.fromJson(billJson(updatedAt: '2026-11-05T10:05:00.000Z'));
+
+      final poll = controller.poll();
       bills.answerGet(Bill.fromJson(billJson(updatedAt: '2026-11-05T10:00:00.000Z', hostItems: const [])));
       await poll;
-      expect(c.bill.value!.host.itemIds, ['i1']);
+
+      expect(controller.bill.value!.host.itemIds, ['i1']);
     });
 
-    test('a newer poll is applied (guests ticking from their phones)', () async {
-      final poll = c.poll();
+    test('a newer poll is applied', () async {
+      final poll = controller.poll();
       bills.answerGet(Bill.fromJson(billJson(updatedAt: '2026-11-05T10:09:00.000Z', hostItems: const [])));
       await poll;
-      expect(c.bill.value!.host.itemIds, isEmpty);
+
+      expect(controller.bill.value!.host.itemIds, isEmpty);
     });
 
-    test('no poll while a write is in flight', () async {
-      c.busy.add('g1');
-      await c.poll();
+    test('skips polling while a write is in flight', () async {
+      controller.busy.add('g1');
+
+      await controller.poll();
+
       expect(bills.getCalls, 0);
     });
 
     test('marking paid records the total the host sees as the amount paid', () async {
       final guest = Bill.fromJson(billJson(guestPaidCents: 0)).others.single;
-      await c.setPaid(guest, true);
-      await c.setPaid(guest, false);
+
+      await controller.setPaid(guest, true);
+      await controller.setPaid(guest, false);
+
       expect(bills.paidCalls, [
         (guestId: 'g1', paid: true, paidCents: 1500000),
         (guestId: 'g1', paid: false, paidCents: null),
       ]);
     });
 
-    test('new link: the bill comes back with a new URL', () async {
-      await c.rotateLink();
-      expect(c.bill.value!.url, 'https://api.example/b/tok2');
+    test('a new link comes back with a new URL', () async {
+      await controller.rotateLink();
+
+      expect(controller.bill.value!.url, 'https://api.example/b/tok2');
       expect(shown.single, S.newLinkCreated);
     });
 
-    test('delete: true when gone (also when it was already gone)', () async {
-      expect(await c.delete(), isTrue);
+    test('delete reports true once the bill is gone, even if it already was', () async {
+      expect(await controller.delete(), isTrue);
+
       bills.failDelete = apiError('BILL_NOT_FOUND', status: 404);
-      expect(await c.delete(), isTrue);
+      expect(await controller.delete(), isTrue);
+
       bills.failDelete = networkError();
-      expect(await c.delete(), isFalse);
+      expect(await controller.delete(), isFalse);
     });
   });
 
   group('polling pauses', () {
-    late BillDetailController c;
+    late BillDetailController controller;
 
     setUp(() {
-      c = BillDetailController('b1', PollingBills(), pollEvery: const Duration(days: 1));
-      c.onInit();
+      controller = BillDetailController('b1', PollingBills(), pollEvery: const Duration(days: 1));
+      controller.onInit();
     });
 
-    tearDown(() => c.onClose());
+    tearDown(() => controller.onClose());
 
     test('while the app is in the background', () {
-      expect(c.isPolling, isTrue);
-      c.didChangeAppLifecycleState(AppLifecycleState.inactive); // brief: keeps going
-      expect(c.isPolling, isTrue);
-      c.didChangeAppLifecycleState(AppLifecycleState.paused);
-      expect(c.isPolling, isFalse);
-      c.didChangeAppLifecycleState(AppLifecycleState.resumed);
-      expect(c.isPolling, isTrue);
+      expect(controller.isPolling, isTrue);
+
+      controller.didChangeAppLifecycleState(AppLifecycleState.inactive);
+      expect(controller.isPolling, isTrue);
+
+      controller.didChangeAppLifecycleState(AppLifecycleState.paused);
+      expect(controller.isPolling, isFalse);
+
+      controller.didChangeAppLifecycleState(AppLifecycleState.resumed);
+      expect(controller.isPolling, isTrue);
     });
 
-    test('while another page covers this one, and both reasons must clear', () {
-      c.setCovered(true);
-      expect(c.isPolling, isFalse);
-      c.didChangeAppLifecycleState(AppLifecycleState.paused);
-      c.setCovered(false);
-      expect(c.isPolling, isFalse); // still in the background
-      c.didChangeAppLifecycleState(AppLifecycleState.resumed);
-      expect(c.isPolling, isTrue);
+    test('until every reason to pause has cleared', () {
+      controller.setCovered(true);
+      expect(controller.isPolling, isFalse);
+
+      controller.didChangeAppLifecycleState(AppLifecycleState.paused);
+      controller.setCovered(false);
+      expect(controller.isPolling, isFalse);
+
+      controller.didChangeAppLifecycleState(AppLifecycleState.resumed);
+      expect(controller.isPolling, isTrue);
     });
   });
 }

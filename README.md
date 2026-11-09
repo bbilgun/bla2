@@ -10,6 +10,9 @@ Split shared costs, see who owes whom, settle up, and get back to zero.
 
 The server owns every cent; the app only displays it.
 
+New to the code? Start with [docs/README.md](docs/README.md): the big picture, then guided tours of the
+[backend](docs/backend.md) and the [app](docs/mobile.md). This README covers setup and operations.
+
 | Folder     | What                                                                          |
 | ---------- | ----------------------------------------------------------------------------- |
 | `backend/` | Serverless Framework v4 service: Lambda handlers, MongoDB, Cognito, S3       |

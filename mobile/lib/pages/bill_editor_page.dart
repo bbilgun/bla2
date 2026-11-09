@@ -1,3 +1,4 @@
+// The bill editor: title, item lines and where guests should pay.
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -6,12 +7,13 @@ import 'package:get/get.dart';
 import '../app/strings.dart';
 import '../controllers/bill_editor_controller.dart';
 import '../domain/money.dart';
+import '../models/models.dart';
 import 'widgets.dart';
 
+/// Creates a bill, or edits the controller's `existing` one. Pops with the saved [Bill].
 class BillEditorPage extends GetView<BillEditorController> {
   const BillEditorPage({super.key});
 
-  /// Returns the saved bill to the page that opened it, which reloads either way.
   Future<void> _save() async {
     final bill = await controller.save();
     if (bill != null) Get.back<Object?>(result: bill);
@@ -48,8 +50,8 @@ class BillEditorPage extends GetView<BillEditorController> {
                 () => DropdownButtonFormField<String>(
                   initialValue: controller.currency.value,
                   decoration: const InputDecoration(labelText: S.currency),
-                  items: [for (final c in currencyCodes) DropdownMenuItem(value: c, child: Text(c))],
-                  onChanged: (v) => controller.currency.value = v ?? 'MNT',
+                  items: [for (final code in currencyCodes) DropdownMenuItem(value: code, child: Text(code))],
+                  onChanged: (code) => controller.currency.value = code ?? 'MNT',
                 ),
               ),
               const SizedBox(height: 24),
@@ -74,10 +76,7 @@ class BillEditorPage extends GetView<BillEditorController> {
                   label: const Text(S.addItem),
                 ),
               ),
-              Obx(() {
-                final e = controller.fieldErrors['items'];
-                return e == null ? const SizedBox.shrink() : _ErrorText(e);
-              }),
+              Obx(() => _ErrorText(controller.fieldErrors['items'])),
               const SizedBox(height: 24),
               Text(S.whereToPay, style: text.titleMedium),
               const SizedBox(height: 4),
@@ -90,7 +89,7 @@ class BillEditorPage extends GetView<BillEditorController> {
                   enableFilter: true,
                   requestFocusOnTap: true,
                   label: const Text(S.bank),
-                  dropdownMenuEntries: [for (final b in S.banks) DropdownMenuEntry(value: b, label: b)],
+                  dropdownMenuEntries: [for (final bank in S.banks) DropdownMenuEntry(value: bank, label: bank)],
                 ),
               ),
               const SizedBox(height: 12),
@@ -105,10 +104,7 @@ class BillEditorPage extends GetView<BillEditorController> {
                 textCapitalization: TextCapitalization.words,
                 decoration: const InputDecoration(labelText: S.accountName),
               ),
-              Obx(() {
-                final e = controller.fieldErrors['payment'];
-                return e == null ? const SizedBox.shrink() : _ErrorText(e);
-              }),
+              Obx(() => _ErrorText(controller.fieldErrors['payment'])),
               const SizedBox(height: 20),
               _PayQr(controller: controller),
               const SizedBox(height: 24),
@@ -130,6 +126,7 @@ class BillEditorPage extends GetView<BillEditorController> {
   }
 }
 
+/// The editable item lines, each with a name, a price and a remove button.
 class _Lines extends StatelessWidget {
   const _Lines({required this.controller});
 
@@ -140,8 +137,9 @@ class _Lines extends StatelessWidget {
     return Obx(
       () => Column(
         children: [
-          for (final (i, line) in controller.lines.indexed)
+          for (final (index, line) in controller.lines.indexed)
             Padding(
+              // Keyed by the line, so removing one doesn't shift field state onto its neighbours.
               key: ObjectKey(line),
               padding: const EdgeInsets.symmetric(vertical: 4),
               child: Row(
@@ -152,7 +150,7 @@ class _Lines extends StatelessWidget {
                       controller: line.name,
                       textCapitalization: TextCapitalization.sentences,
                       textInputAction: TextInputAction.next,
-                      decoration: InputDecoration(labelText: S.itemName, hintText: i == 0 ? S.itemNameHint : null),
+                      decoration: InputDecoration(labelText: S.itemName, hintText: index == 0 ? S.itemNameHint : null),
                     ),
                   ),
                   const SizedBox(width: 8),
@@ -173,7 +171,7 @@ class _Lines extends StatelessWidget {
                   ),
                   IconButton(
                     tooltip: S.remove,
-                    onPressed: controller.lines.length > 1 ? () => controller.removeLine(i) : null,
+                    onPressed: controller.lines.length > 1 ? () => controller.removeLine(index) : null,
                     icon: const Icon(Icons.close),
                   ),
                 ],
@@ -185,6 +183,7 @@ class _Lines extends StatelessWidget {
   }
 }
 
+/// The host's bank QR screenshot, with a button to upload or replace it.
 class _PayQr extends StatelessWidget {
   const _PayQr({required this.controller});
 
@@ -207,16 +206,7 @@ class _PayQr extends StatelessWidget {
                 height: 72,
                 decoration: BoxDecoration(color: scheme.surfaceContainerHigh, borderRadius: BorderRadius.circular(12)),
                 clipBehavior: Clip.antiAlias,
-                child: uploading
-                    ? const Center(child: CircularProgressIndicator())
-                    : url == null
-                    ? Icon(Icons.qr_code_2, color: scheme.outline)
-                    : Image.network(
-                        url,
-                        fit: BoxFit.cover,
-                        cacheWidth: (72 * MediaQuery.devicePixelRatioOf(context)).round(),
-                        errorBuilder: (_, _, _) => Icon(Icons.qr_code_2, color: scheme.outline),
-                      ),
+                child: _thumbnail(context, url: url, uploading: uploading),
               ),
               const SizedBox(width: 16),
               Expanded(
@@ -240,16 +230,33 @@ class _PayQr extends StatelessWidget {
       );
     });
   }
+
+  Widget _thumbnail(BuildContext context, {required String? url, required bool uploading}) {
+    final placeholder = Icon(Icons.qr_code_2, color: Theme.of(context).colorScheme.outline);
+    if (uploading) return const Center(child: CircularProgressIndicator());
+    if (url == null) return placeholder;
+    return Image.network(
+      url,
+      fit: BoxFit.cover,
+      cacheWidth: (72 * MediaQuery.devicePixelRatioOf(context)).round(),
+      errorBuilder: (_, _, _) => placeholder,
+    );
+  }
 }
 
+/// A field error in red under a group of fields. Shows nothing when [message] is null.
 class _ErrorText extends StatelessWidget {
   const _ErrorText(this.message);
 
-  final String message;
+  final String? message;
 
   @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.only(top: 6),
-    child: Text(message, style: TextStyle(color: Theme.of(context).colorScheme.error)),
-  );
+  Widget build(BuildContext context) {
+    final message = this.message;
+    if (message == null) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: Text(message, style: TextStyle(color: Theme.of(context).colorScheme.error)),
+    );
+  }
 }

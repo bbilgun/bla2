@@ -1,3 +1,4 @@
+// Small widgets and dialogs shared by several pages.
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -8,35 +9,46 @@ import '../app/strings.dart';
 import '../app/theme.dart';
 import '../domain/money.dart';
 
-/// Formats integer cents. Colors by sign when [signed] is set: green owed to you, red you owe.
+/// An amount in minor units, formatted for its currency with tabular figures.
 class MoneyText extends StatelessWidget {
   const MoneyText(this.cents, {super.key, required this.currency, this.style, this.signed = false});
 
   final int cents;
   final String currency;
   final TextStyle? style;
+
+  /// Shows the amount without its sign, colored instead: green when owed to you, red when you owe.
   final bool signed;
 
   @override
   Widget build(BuildContext context) {
-    final colors = context.moneyColors;
-    final color = !signed || cents == 0 ? null : (cents > 0 ? colors.positive : colors.negative);
     return Text(
       formatCents(signed ? cents.abs() : cents, currency: currency),
-      style: (style ?? const TextStyle()).copyWith(color: color, fontFeatures: const [FontFeature.tabularFigures()]),
+      style: (style ?? const TextStyle()).copyWith(
+        color: _color(context),
+        fontFeatures: const [FontFeature.tabularFigures()],
+      ),
     );
+  }
+
+  Color? _color(BuildContext context) {
+    if (!signed || cents == 0) return null;
+    final colors = context.moneyColors;
+    return cents > 0 ? colors.positive : colors.negative;
   }
 }
 
-/// A person's or group's initials on a squircle (the logo's shape), tinted by name so the same
-/// person always gets the same color.
+/// A person's or group's initials on a squircle, the logo's shape. The tint comes from the name,
+/// so the same person always gets the same color.
 class Initials extends StatelessWidget {
   const Initials(this.name, {super.key, this.radius = 18});
 
   final String name;
+
+  /// Half the width of the square.
   final double radius;
 
-  // (light background, light text, dark background, dark text)
+  // Each tint is (light background, light text, dark background, dark text).
   static const _tints = [
     (Color(0xFFDDF5EA), Color(0xFF00573A), Color(0xFF123526), Color(0xFF7BE3B5)),
     (Color(0xFFE2ECFF), Color(0xFF1F4BB8), Color(0xFF16233F), Color(0xFF9EBBFF)),
@@ -48,9 +60,10 @@ class Initials extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final parts = name.trim().split(RegExp(r'\s+')).where((p) => p.isNotEmpty).toList();
-    final letters = parts.isEmpty ? '?' : parts.take(2).map((p) => p.characters.first.toUpperCase()).join();
-    final tint = _tints[name.codeUnits.fold(0, (a, c) => a + c) % _tints.length];
+    final words = name.trim().split(RegExp(r'\s+')).where((word) => word.isNotEmpty).toList();
+    final letters = words.isEmpty ? '?' : words.take(2).map((word) => word.characters.first.toUpperCase()).join();
+    final nameSum = name.codeUnits.fold(0, (sum, unit) => sum + unit);
+    final tint = _tints[nameSum % _tints.length];
     final dark = Theme.of(context).brightness == Brightness.dark;
     final size = radius * 2;
     return Container(
@@ -69,14 +82,15 @@ class Initials extends StatelessWidget {
   }
 }
 
-/// Grey placeholder shapes that pulse while a screen loads: the layout appears at once instead of
-/// a lone spinner, and nothing jumps when the data arrives. One animation drives all of them.
+/// Grey placeholder rows that pulse while a screen loads. The layout appears at once instead of a
+/// lone spinner, and nothing jumps when the data arrives.
 class SkeletonList extends StatefulWidget {
   const SkeletonList({super.key, this.count = 5, this.header = false});
 
+  /// How many placeholder rows to show.
   final int count;
 
-  /// A tall card first, like the balance card on a group.
+  /// Whether to start with a tall card, like the balance card on a group.
   final bool header;
 
   @override
@@ -96,12 +110,12 @@ class _SkeletonListState extends State<SkeletonList> with SingleTickerProviderSt
   @override
   Widget build(BuildContext context) {
     final fill = Theme.of(context).colorScheme.surfaceContainerHighest;
-    Widget box(double w, double h, [double r = 8]) => Container(
-      width: w,
-      height: h,
+    Widget box(double width, double height, [double radius = 8]) => Container(
+      width: width,
+      height: height,
       decoration: ShapeDecoration(
         color: fill,
-        shape: RoundedSuperellipseBorder(borderRadius: BorderRadius.circular(r)),
+        shape: RoundedSuperellipseBorder(borderRadius: BorderRadius.circular(radius)),
       ),
     );
     final row = Card(
@@ -136,11 +150,13 @@ class _SkeletonListState extends State<SkeletonList> with SingleTickerProviderSt
   }
 }
 
-/// Big bold section title, like the headings on the guest page.
+/// A big bold section heading, matching the headings on the guest web page.
 class SectionTitle extends StatelessWidget {
   const SectionTitle(this.text, {super.key, this.trailing});
 
   final String text;
+
+  /// Shown at the right end, such as an "add" button.
   final Widget? trailing;
 
   @override
@@ -155,6 +171,7 @@ class SectionTitle extends StatelessWidget {
   );
 }
 
+/// A full-page error with a "try again" button, for when a screen's first load fails.
 class ErrorRetry extends StatelessWidget {
   const ErrorRetry({super.key, required this.message, required this.onRetry});
 
@@ -181,6 +198,7 @@ class ErrorRetry extends StatelessWidget {
   }
 }
 
+/// An error message in a red box, for forms. Shows nothing when [message] is null or empty.
 class InlineError extends StatelessWidget {
   const InlineError(this.message, {super.key});
 
@@ -200,16 +218,13 @@ class InlineError extends StatelessWidget {
   }
 }
 
-/// "11-р сарын 5"
-String shortDate(DateTime d) => S.date(d);
-
-/// An empty state that still pulls to refresh: a RefreshIndicator needs something scrollable under it.
+/// An empty state that still supports pull-to-refresh, which needs something scrollable underneath.
 class ScrollableEmpty extends StatelessWidget {
   const ScrollableEmpty({super.key, required this.child, this.header = const []});
 
   final Widget child;
 
-  /// Shown above the empty state (e.g. pending invites).
+  /// Widgets shown above the empty state, such as pending invites.
   final List<Widget> header;
 
   @override
@@ -228,12 +243,16 @@ class ScrollableEmpty extends StatelessWidget {
   );
 }
 
-/// The end of a paged list: a spinner while the next page loads, a "load more" button when there's
-/// more (always shown after a failure, since the list stops loading by itself then), else nothing.
+/// The end of a paged list: a spinner while the next page loads, a "load more" button when there are
+/// more pages, and nothing at the end. After a failure the list stops loading by itself, so the
+/// button is how the user tries again.
 class LoadMoreFooter extends StatelessWidget {
   const LoadMoreFooter({super.key, required this.hasMore, required this.loading, required this.onLoadMore});
 
+  /// Whether there are more pages.
   final bool hasMore;
+
+  /// Whether the next page is loading.
   final bool loading;
   final VoidCallback onLoadMore;
 
@@ -251,19 +270,20 @@ class LoadMoreFooter extends StatelessWidget {
   }
 }
 
-/// The avatar in the main pages' app bars: opens the profile page (sign out, delete account).
+/// The avatar in the home page's app bar. It opens the account page.
 class AccountButton extends StatelessWidget {
   const AccountButton({super.key, this.name});
 
+  /// The user's name for the initials. A plain icon shows until it's known.
   final String? name;
 
   @override
   Widget build(BuildContext context) {
-    final n = name;
+    final name = this.name;
     return IconButton(
       tooltip: S.account,
       onPressed: () => unawaited(Get.toNamed<void>(Routes.account)),
-      icon: n == null ? const Icon(Icons.account_circle_outlined) : Initials(n, radius: 15),
+      icon: name == null ? const Icon(Icons.account_circle_outlined) : Initials(name, radius: 15),
     );
   }
 }
@@ -274,7 +294,11 @@ class RouteVisibility extends StatefulWidget {
   const RouteVisibility({super.key, required this.child, this.onCovered, this.onUncovered});
 
   final Widget child;
+
+  /// Called when another page is pushed on top.
   final VoidCallback? onCovered;
+
+  /// Called when this page is back on top.
   final VoidCallback? onUncovered;
 
   @override
@@ -311,7 +335,8 @@ class _RouteVisibilityState extends State<RouteVisibility> with RouteAware {
   Widget build(BuildContext context) => widget.child;
 }
 
-/// Asks before doing something that can't be undone. True if confirmed.
+/// Asks before doing something that can't be undone. Returns whether the user confirmed.
+/// [destructive] colors the confirm button red.
 Future<bool> confirmAction(
   BuildContext context, {
   required String title,
@@ -321,37 +346,37 @@ Future<bool> confirmAction(
   bool destructive = true,
 }) async {
   final scheme = Theme.of(context).colorScheme;
-  final ok = await showDialog<bool>(
+  final confirmed = await showDialog<bool>(
     context: context,
-    builder: (ctx) => AlertDialog(
+    builder: (dialogContext) => AlertDialog(
       title: Text(title),
       content: Text(message),
       actions: [
-        TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: Text(cancelLabel)),
+        TextButton(onPressed: () => Navigator.of(dialogContext).pop(false), child: Text(cancelLabel)),
         FilledButton(
           style: destructive
               ? FilledButton.styleFrom(backgroundColor: scheme.error, foregroundColor: scheme.onError)
               : null,
-          onPressed: () => Navigator.of(ctx).pop(true),
+          onPressed: () => Navigator.of(dialogContext).pop(true),
           child: Text(confirmLabel),
         ),
       ],
     ),
   );
-  return ok ?? false;
+  return confirmed ?? false;
 }
 
-/// A message the person has to acknowledge.
+/// Shows a message the user has to acknowledge.
 Future<void> showMessage(BuildContext context, {required String title, required String message}) => showDialog<void>(
   context: context,
-  builder: (ctx) => AlertDialog(
+  builder: (dialogContext) => AlertDialog(
     title: Text(title),
     content: Text(message),
-    actions: [FilledButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text(S.ok))],
+    actions: [FilledButton(onPressed: () => Navigator.of(dialogContext).pop(), child: const Text(S.ok))],
   ),
 );
 
-/// "Discard your changes?" when leaving a form with unsaved edits. True to leave.
+/// Asks "discard your changes?" before leaving a form with unsaved edits. Returns true to leave.
 Future<bool> confirmDiscard(BuildContext context) => confirmAction(
   context,
   title: S.discardChangesTitle,
@@ -360,11 +385,15 @@ Future<bool> confirmDiscard(BuildContext context) => confirmAction(
   cancelLabel: S.keepEditing,
 );
 
-/// Blocks the back button and swipe while [saving], and asks before throwing away unsaved changes.
+/// Wraps a form page. Blocks the back button and swipe while saving, and asks before throwing away
+/// unsaved changes.
 class FormPopScope extends StatelessWidget {
   const FormPopScope({super.key, required this.saving, required this.isDirty, required this.child});
 
+  /// Whether a save is running. Read at the moment the user tries to leave.
   final bool Function() saving;
+
+  /// Whether the form has unsaved changes.
   final bool Function() isDirty;
   final Widget child;
 
@@ -380,8 +409,8 @@ class FormPopScope extends StatelessWidget {
   );
 }
 
-/// One text field in a dialog, e.g. "invite by email" or "rename". [onSubmit] returns an error to
-/// show under the field, or null to close. Owns (and disposes) its text controller.
+/// A dialog with one text field, such as "invite by email" or "rename". [onSubmit] returns an error
+/// to show under the field, or null to close the dialog.
 class TextPromptDialog extends StatefulWidget {
   const TextPromptDialog({
     super.key,
@@ -399,7 +428,11 @@ class TextPromptDialog extends StatefulWidget {
   final String label;
   final String submitLabel;
   final Future<String?> Function(String value) onSubmit;
+
+  /// The field's starting text.
   final String initial;
+
+  /// Help text under the field.
   final String? helper;
   final TextInputType? keyboardType;
   final TextCapitalization capitalization;

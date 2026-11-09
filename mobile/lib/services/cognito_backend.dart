@@ -1,3 +1,5 @@
+// The Cognito client behind AuthService: the real one built on amazon_cognito_identity_dart_2,
+// with tokens kept in secure storage.
 import 'dart:async';
 import 'dart:convert';
 
@@ -5,39 +7,43 @@ import 'package:amazon_cognito_identity_dart_2/cognito.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 
-/// The ID token of one session, decoded. The API accepts only Cognito ID tokens.
+/// One session's ID token and the claims we need from it. The API accepts only Cognito ID tokens.
 class AuthTokens {
   const AuthTokens({required this.idToken, required this.userId, required this.expiresAt});
 
+  /// The raw JWT, sent as the bearer token.
   final String idToken;
 
-  /// The Cognito `sub`, the same id the server uses for this person.
+  /// The Cognito `sub`, which is also the user's id on the server.
   final String userId;
+
+  /// When the token stops being accepted.
   final DateTime expiresAt;
 }
 
-/// What's saved on this device for the last signed-in person, read without the network.
+/// The session saved on this device, read without the network.
 class StoredSession {
   const StoredSession({required this.userId, this.tokens});
 
+  /// The Cognito `sub` of the saved user.
   final String userId;
 
   /// The saved ID token, possibly expired. Null if it couldn't be read.
   final AuthTokens? tokens;
 }
 
-/// Nothing to refresh with: no refresh token stored. The session is over, not offline.
+/// No refresh token is stored, so the session is over. This is different from being offline.
 class SessionMissingException implements Exception {
   const SessionMissingException();
 }
 
-/// The parts of Cognito that [AuthService] uses. The real one wraps amazon_cognito_identity_dart_2;
-/// tests pass a fake so token caching, expiry and sign-out races can be checked without AWS.
+/// The parts of Cognito that AuthService uses. Tests pass a fake so token caching, expiry and
+/// sign-out races can be checked without AWS.
 ///
-/// Errors are the library's own: [CognitoClientException] (with `code`), the
-/// `CognitoUser*Exception` challenge types, [SessionMissingException], or storage errors.
+/// Methods throw the library's own errors: [CognitoClientException] with a `code`, the
+/// `CognitoUser...Exception` challenge types, [SessionMissingException], or storage errors.
 abstract interface class CognitoBackend {
-  /// The person saved on this device, from secure storage only. Null if nobody is signed in.
+  /// The user saved on this device, from secure storage only. Null if nobody is signed in.
   Future<StoredSession?> restore();
 
   /// A valid session: the cached one, or refreshed with the refresh token when it has expired.
@@ -46,12 +52,16 @@ abstract interface class CognitoBackend {
   /// New tokens from Cognito with the refresh token, even if the cached ones look valid.
   Future<AuthTokens> refresh();
 
+  /// Signs in with a password and saves the session.
   Future<AuthTokens> signIn(String username, String password);
 
+  /// Registers a new user. Cognito emails them a confirmation code.
   Future<void> signUp({required String username, required String password, required String name});
 
+  /// Confirms a new account with the emailed code.
   Future<void> confirmSignUp(String username, String code);
 
+  /// Emails the confirmation code again.
   Future<void> resendCode(String username);
 
   /// Emails a reset code.
@@ -60,11 +70,11 @@ abstract interface class CognitoBackend {
   /// Sets a new password with the emailed code.
   Future<void> confirmPassword(String username, String code, String newPassword);
 
-  /// Forgets the session on this device (secure storage). Never uses the network.
+  /// Forgets the session stored on this device. Never uses the network.
   Future<void> signOut();
 }
 
-/// Cognito tokens live in the Keychain (iOS) / Keystore-backed storage (Android), not plain prefs.
+/// Keeps Cognito's tokens in the iOS Keychain or Android's Keystore-backed storage instead of plain prefs.
 class _SecureCognitoStorage extends CognitoStorage {
   _SecureCognitoStorage(this._storage);
 
@@ -104,8 +114,8 @@ class _SecureCognitoStorage extends CognitoStorage {
   }
 }
 
-/// The Cognito library has no timeouts of its own. A request that hangs fails here instead;
-/// the library reports it as `CognitoClientException(code: 'Unknown error')`, which we treat as offline.
+/// Adds a timeout to every Cognito request, since the library has none. The library reports a timeout
+/// as `CognitoClientException(code: 'Unknown error')`, which AuthService treats as offline.
 class _TimeoutClient extends http.BaseClient {
   _TimeoutClient(this._inner, this._timeout);
 
@@ -119,10 +129,11 @@ class _TimeoutClient extends http.BaseClient {
   void close() => _inner.close();
 }
 
+/// The real [CognitoBackend], talking to the user pool over HTTPS.
 class AmazonCognitoBackend implements CognitoBackend {
   AmazonCognitoBackend._(this._pool);
 
-  /// [timeout] bounds every call to Cognito (sign-in, refresh, codes).
+  /// Connects to the pool. [timeout] applies to every call to Cognito.
   factory AmazonCognitoBackend({
     required String userPoolId,
     required String clientId,
@@ -175,7 +186,7 @@ class AmazonCognitoBackend implements CognitoBackend {
   @override
   Future<AuthTokens> session() async {
     final user = _user;
-    // Without a refresh token getSession() can only throw a plain Exception; say what it means instead.
+    // Without a refresh token getSession() throws a plain Exception, so we say what it means up front.
     if (user == null || await _storedRefreshToken(user) == null) throw const SessionMissingException();
     return _fromSession(await user.getSession());
   }
@@ -234,7 +245,8 @@ class AmazonCognitoBackend implements CognitoBackend {
     final user = _user;
     _user = null;
     try {
-      await user?.signOut(); // local only: clears that user's cached tokens
+      // This is local only. It clears that user's cached tokens without calling Cognito.
+      await user?.signOut();
     } on Exception {
       // Clearing storage below is what matters.
     }

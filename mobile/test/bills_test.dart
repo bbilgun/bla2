@@ -1,3 +1,5 @@
+// QR bills: parsing, the bill editor, and the host's optimistic ticks. Also holds the bill fakes
+// that bill_detail_controller_test.dart imports.
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -11,7 +13,8 @@ import 'package:netzero/services/api_client.dart';
 
 import 'fakes.dart' show recordNotifications;
 
-/// The bill JSON the server sends (shape from backend/src/services/bills.ts).
+/// A bill as the server sends it, shaped like backend/src/services/bills.ts. Bat has paid for half
+/// of the khuushuur unless told otherwise.
 Map<String, dynamic> billJson({
   String status = 'OPEN',
   List<String> hostItems = const ['i1'],
@@ -70,6 +73,7 @@ Map<String, dynamic> billJson({
   'url': 'https://api.example/b/tok',
 };
 
+/// Records creates and updates. The first [failures] creates fail as if offline.
 class FakeBills implements BillsRepository {
   FakeBills({this.failures = 0});
 
@@ -102,6 +106,7 @@ class SlowBills implements BillsRepository {
   final sent = <List<String>>[];
   final _gates = <Completer<void>>[];
 
+  /// Lets the oldest held call finish.
   void releaseNext() => _gates.removeAt(0).complete();
 
   /// When set, every updateGuest fails with it once released.
@@ -109,20 +114,21 @@ class SlowBills implements BillsRepository {
 
   @override
   Future<Bill> updateGuest(String id, String guestId, {List<String>? itemIds, bool? paid, int? paidCents}) async {
-    final ids = [...?itemIds]..sort();
-    sent.add(ids);
+    final sortedIds = [...?itemIds]..sort();
+    sent.add(sortedIds);
     final gate = Completer<void>();
     _gates.add(gate);
     await gate.future;
     final error = failWith;
     if (error != null) throw error;
-    return Bill.fromJson(billJson(hostItems: ids));
+    return Bill.fromJson(billJson(hostItems: sortedIds));
   }
 
   @override
   dynamic noSuchMethod(Invocation invocation) => throw UnimplementedError();
 }
 
+/// A profile with bank details saved from an earlier bill.
 class FakeUsers implements UserRepository {
   @override
   Future<Me> me() async => const Me(
@@ -136,10 +142,11 @@ class FakeUsers implements UserRepository {
   dynamic noSuchMethod(Invocation invocation) => throw UnimplementedError();
 }
 
+/// A bill editor that has run onInit, so it has started loading the profile.
 BillEditorController editor(FakeBills bills, {Bill? existing}) {
-  final c = BillEditorController(existing: existing, bills: bills, users: FakeUsers());
-  c.onInit();
-  return c;
+  final form = BillEditorController(existing: existing, bills: bills, users: FakeUsers());
+  form.onInit();
+  return form;
 }
 
 void main() {
@@ -150,19 +157,21 @@ void main() {
     recordNotifications();
   });
 
-  test('a guest who paid and then ticked more: the server says how much is still due', () {
-    final guest = Bill.fromJson(billJson(guestPaidCents: 1000000, guestTotalCents: 1500000)).others.single;
-    expect(guest.paid, isFalse);
-    expect(guest.paidCents, 1000000);
-    expect(guest.dueCents, 500000);
-    expect(guest.paidDiffers, isTrue);
+  test('the server says how much a guest still owes after changing their items', () {
+    final underpaid = Bill.fromJson(billJson(guestPaidCents: 1000000, guestTotalCents: 1500000)).others.single;
     final overpaid = Bill.fromJson(billJson(guestPaidCents: 2000000)).others.single;
+
+    expect(underpaid.paid, isFalse);
+    expect(underpaid.paidCents, 1000000);
+    expect(underpaid.dueCents, 500000);
+    expect(underpaid.paidDiffers, isTrue);
     expect(overpaid.dueCents, -500000);
     expect(overpaid.paid, isTrue);
   });
 
-  test('Bill.fromJson: integer amounts, host, names', () {
+  test('a bill parses its amounts, host and guest names', () {
     final bill = Bill.fromJson(billJson());
+
     expect(bill.isOpen, isTrue);
     expect(bill.host.id, 'host');
     expect(bill.others.single.name, 'Бат');
@@ -174,26 +183,32 @@ void main() {
 
   group('new bill', () {
     test('pre-fills bank details from the last bill', () async {
-      final c = editor(FakeBills());
+      final form = editor(FakeBills());
+
       await Future<void>.delayed(Duration.zero);
-      expect(c.bank.text, 'Голомт банк');
-      expect(c.accountNumber.text, '1105000123');
+
+      expect(form.bank.text, 'Голомт банк');
+      expect(form.accountNumber.text, '1105000123');
     });
 
-    test('blank rows are skipped; half-filled rows and missing title are errors', () {
-      final c = editor(FakeBills());
-      expect(c.buildBody(), isNull);
-      expect(c.fieldErrors.keys, containsAll(['title', 'items']));
+    test('skips blank rows and reports half-filled rows and a missing title', () {
+      final form = editor(FakeBills());
 
-      c.title.text = 'Оройн хоол';
-      c.lines[0].name.text = 'Хуушуур';
-      c.lines[0].price.text = '30000';
-      c.lines[1].name.text = 'Кола'; // no price
-      expect(c.buildBody(), isNull);
-      expect(c.fieldErrors['items'], S.itemRowIncomplete(2));
+      expect(form.buildBody(), isNull);
+      expect(form.fieldErrors.keys, containsAll(['title', 'items']));
 
-      c.lines[1].price.text = '4500';
-      final body = c.buildBody()!;
+      form.title.text = 'Оройн хоол';
+      form.lines[0].name.text = 'Хуушуур';
+      form.lines[0].price.text = '30000';
+      // The second row has a name but no price.
+      form.lines[1].name.text = 'Кола';
+
+      expect(form.buildBody(), isNull);
+      expect(form.fieldErrors['items'], S.itemRowIncomplete(2));
+
+      form.lines[1].price.text = '4500';
+      final body = form.buildBody()!;
+
       expect(body['currency'], 'MNT');
       expect(body['items'], [
         {'name': 'Хуушуур', 'priceCents': 3000000},
@@ -202,43 +217,49 @@ void main() {
     });
 
     test('bank details are all or nothing', () async {
-      final c = editor(FakeBills());
+      final form = editor(FakeBills());
       await Future<void>.delayed(Duration.zero);
-      c.title.text = 'x';
-      c.lines[0].name.text = 'a';
-      c.lines[0].price.text = '1';
-      c.accountName.text = '';
-      expect(c.buildBody(), isNull);
-      expect(c.fieldErrors['payment'], S.paymentIncomplete);
+      form.title.text = 'x';
+      form.lines[0].name.text = 'a';
+      form.lines[0].price.text = '1';
 
-      c.bank.text = '';
-      c.accountNumber.text = '';
-      expect(c.buildBody()!['payment'], isNull);
+      form.accountName.text = '';
+
+      expect(form.buildBody(), isNull);
+      expect(form.fieldErrors['payment'], S.paymentIncomplete);
+
+      form.bank.text = '';
+      form.accountNumber.text = '';
+
+      expect(form.buildBody()!['payment'], isNull);
     });
 
-    test('Save, network drops, Save again: same Idempotency-Key, so one bill', () async {
+    test('saving again after a network failure reuses the Idempotency-Key', () async {
       final bills = FakeBills(failures: 1);
-      final c = editor(bills);
-      c.title.text = 'Оройн хоол';
-      c.lines[0].name.text = 'Хуушуур';
-      c.lines[0].price.text = '30000';
+      final form = editor(bills);
+      form.title.text = 'Оройн хоол';
+      form.lines[0].name.text = 'Хуушуур';
+      form.lines[0].price.text = '30000';
 
-      expect(await c.save(), isNull);
-      expect(c.error.value, S.saveOffline);
-      expect(await c.save(), isNotNull);
-      expect(bills.creates.map((x) => x.key).toSet(), hasLength(1));
-      expect(c.pendingIdempotencyKey, isNull);
+      expect(await form.save(), isNull);
+      expect(form.error.value, S.saveOffline);
+
+      expect(await form.save(), isNotNull);
+      expect(bills.creates.map((create) => create.key).toSet(), hasLength(1));
+      expect(form.pendingIdempotencyKey, isNull);
     });
   });
 
-  test('editing keeps line ids, so guests keep their ticks, and uses PUT', () async {
+  test('editing keeps line ids so guests keep their ticks, and sends a PUT', () async {
     final bills = FakeBills();
-    final c = editor(bills, existing: Bill.fromJson(billJson()));
-    expect(c.title.text, 'Оройн хоол');
-    expect(c.lines.map((l) => l.price.text), ['30000.00', '4500.00']);
+    final form = editor(bills, existing: Bill.fromJson(billJson()));
 
-    c.lines[1].price.text = '5000';
-    expect(await c.save(), isNotNull);
+    expect(form.title.text, 'Оройн хоол');
+    expect(form.lines.map((line) => line.price.text), ['30000.00', '4500.00']);
+
+    form.lines[1].price.text = '5000';
+
+    expect(await form.save(), isNotNull);
     expect(bills.creates, isEmpty);
     expect(bills.updates.single.id, 'b1');
     expect(bills.updates.single.body['items'], [
@@ -247,32 +268,38 @@ void main() {
     ]);
   });
 
-  test('host ticks show at once; taps during a request merge into one follow-up with the final list', () async {
+  test('host ticks show at once, and taps during a request merge into one follow-up', () async {
     final bills = SlowBills();
-    final c = BillDetailController('b1', bills); // onInit not called: no load, no polling timer
-    c.bill.value = Bill.fromJson(billJson()); // the host has i1
+    // Without onInit there is no load and no polling timer.
+    final controller = BillDetailController('b1', bills);
+    // The host starts with i1 ticked.
+    controller.bill.value = Bill.fromJson(billJson());
 
-    final done = c.toggleMine('i2');
-    expect(c.myItemIds, {'i1', 'i2'}); // before the server answers
-    unawaited(c.toggleMine('i1'));
-    unawaited(c.toggleMine('i2'));
-    expect(c.myItemIds, isEmpty);
+    final toggling = controller.toggleMine('i2');
+
+    // The tick shows before the server answers.
+    expect(controller.myItemIds, {'i1', 'i2'});
+
+    unawaited(controller.toggleMine('i1'));
+    unawaited(controller.toggleMine('i2'));
+
+    expect(controller.myItemIds, isEmpty);
 
     bills.releaseNext();
     await pumpEventQueue();
     bills.releaseNext();
-    await done;
+    await toggling;
 
     expect(bills.sent, [
       ['i1', 'i2'],
       <String>[],
     ]);
-    expect(c.pendingMine.value, isNull);
-    expect(c.bill.value!.host.itemIds, isEmpty);
+    expect(controller.pendingMine.value, isNull);
+    expect(controller.bill.value!.host.itemIds, isEmpty);
   });
 }
 
-/// get() answers from a queue of held responses; writes answer at once.
+/// get() calls wait until the test answers them, while writes answer at once.
 class PollingBills implements BillsRepository {
   final _gets = <Completer<Bill>>[];
   int getCalls = 0;
@@ -286,9 +313,9 @@ class PollingBills implements BillsRepository {
   @override
   Future<Bill> get(String id) {
     getCalls++;
-    final c = Completer<Bill>();
-    _gets.add(c);
-    return c.future;
+    final answer = Completer<Bill>();
+    _gets.add(answer);
+    return answer.future;
   }
 
   @override

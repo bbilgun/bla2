@@ -1,3 +1,4 @@
+// The HTTP client for the NetZero API and for direct uploads to S3.
 import 'dart:async';
 
 import 'package:dio/dio.dart';
@@ -13,8 +14,8 @@ import 'auth_service.dart';
 
 export 'api_exception.dart';
 
-/// Adds the ID token to every request. A lookup that fails (offline, session over) fails the request
-/// with that [ApiException] instead of sending it without a token.
+/// Adds the ID token to every request. If getting the token fails, the request fails with that
+/// [ApiException] instead of going out without a token.
 class _AuthInterceptor extends Interceptor {
   _AuthInterceptor(this._auth);
 
@@ -32,10 +33,11 @@ class _AuthInterceptor extends Interceptor {
   }
 }
 
-/// The only class that talks HTTP to the NetZero API. Only repositories use it.
+/// Sends requests to the NetZero API with the user's token, and turns every failure into an
+/// [ApiException]. Repositories are its only callers.
 class ApiClient extends GetxService {
-  /// [dio] and [s3] are for tests. [onSessionExpired] runs once when a session ends on its own
-  /// (by default: go to the sign-in page).
+  /// [dio] and [s3] let tests supply fake HTTP clients. [onSessionExpired] runs once when the session
+  /// ends because the API kept answering 401, and by default goes to the sign-in page.
   ApiClient(this._auth, {Dio? dio, Dio? s3, Future<void> Function()? onSessionExpired})
     : _dio =
           dio ??
@@ -47,8 +49,8 @@ class ApiClient extends GetxService {
               contentType: Headers.jsonContentType,
             ),
           ),
-      // Separate client for S3: no auth interceptor, no base URL. An Authorization header on a
-      // presigned request makes S3 reject it. Generous send timeout: a photo on a slow connection.
+      // S3 gets its own client with no auth interceptor, because S3 rejects a presigned request that
+      // also carries an Authorization header. The long send timeout allows for photos on slow networks.
       _s3 =
           s3 ??
           Dio(
@@ -72,9 +74,12 @@ class ApiClient extends GetxService {
     await Get.offAllNamed<void>(Routes.signIn);
   }
 
+  /// GETs [path] and returns the decoded JSON body.
   Future<Map<String, dynamic>> get(String path, {Map<String, dynamic>? query}) =>
       _send(() => _dio.get<Map<String, dynamic>>(path, queryParameters: query));
 
+  /// POSTs [data] as JSON. Pass [idempotencyKey] for writes that create money records, so a retry
+  /// of the same save can't create a second one.
   Future<Map<String, dynamic>> post(String path, {Object? data, String? idempotencyKey}) => _send(
     () => _dio.post<Map<String, dynamic>>(
       path,
@@ -83,16 +88,19 @@ class ApiClient extends GetxService {
     ),
   );
 
+  /// PUTs [data] as JSON.
   Future<Map<String, dynamic>> put(String path, {Object? data}) =>
       _send(() => _dio.put<Map<String, dynamic>>(path, data: data));
 
+  /// PATCHes [data] as JSON.
   Future<Map<String, dynamic>> patch(String path, {Object? data}) =>
       _send(() => _dio.patch<Map<String, dynamic>>(path, data: data));
 
+  /// DELETEs [path].
   Future<Map<String, dynamic>> delete(String path) => _send(() => _dio.delete<Map<String, dynamic>>(path));
 
-  /// Uploads straight to S3 with a presigned POST: every signed field first, then the file last as
-  /// `file` (S3 ignores fields after the file). The file never touches Lambda.
+  /// Uploads a file straight to S3 using a presigned POST from the API, so the bytes never pass
+  /// through Lambda. Throws `FILE_TOO_LARGE` before sending anything bigger than the signed limit.
   Future<void> postPresigned(
     PresignedPost signed,
     List<int> bytes, {
@@ -100,6 +108,7 @@ class ApiClient extends GetxService {
     required String filename,
   }) async {
     if (bytes.length > signed.maxBytes) throw ApiException(code: 'FILE_TOO_LARGE', message: S.fileTooLarge);
+    // S3 ignores any field after the file, so the signed fields go first.
     final form = FormData()
       ..fields.addAll(signed.fields.entries)
       ..files.add(
@@ -112,43 +121,43 @@ class ApiClient extends GetxService {
       await _s3.post<void>(signed.uploadUrl, data: form);
     } on DioException catch (e) {
       final status = e.response?.statusCode;
-      throw status == null
-          ? ApiException(code: 'NETWORK', message: S.noConnection)
-          : ApiException(code: 'UPLOAD_FAILED', message: S.uploadFailed, status: status);
+      if (status == null) {
+        throw ApiException(code: 'NETWORK', message: S.noConnection);
+      }
+      throw ApiException(code: 'UPLOAD_FAILED', message: S.uploadFailed, status: status);
     }
   }
 
-  /// A 401 gets one forced token refresh and one retry. Only if that fails too is the session over:
-  /// then we sign out once (however many requests failed together) and go to sign-in.
+  // Sends a request. A 401 gets one forced token refresh and one retry. If the retry is also refused,
+  // the session is over: we sign out once, however many requests failed together, and go to sign-in.
   Future<Map<String, dynamic>> _send(Future<Response<Map<String, dynamic>>> Function() request) async {
-    final gen = _auth.generation;
+    final generation = _auth.generation;
     try {
       return (await request()).data ?? const {};
     } on DioException catch (e) {
       final error = mapError(e);
       if (error is SessionExpiredException) {
-        await _expire(gen);
+        await _expire(generation);
         throw error;
       }
-      // Not ours to fix: a request from a session that has since ended must not be re-sent with the
-      // next person's token.
-      if (error.status != 401 || gen != _auth.generation) throw error;
+      // A request from a session that has since ended must not be re-sent with the next user's token.
+      if (error.status != 401 || generation != _auth.generation) throw error;
 
-      final String? fresh;
+      final String? freshToken;
       try {
-        fresh = await _auth.refreshAfterUnauthorized(_bearer(e.requestOptions));
+        freshToken = await _auth.refreshAfterUnauthorized(_bearer(e.requestOptions));
       } on SessionExpiredException {
-        await _expire(gen);
+        await _expire(generation);
         rethrow;
       }
-      // Null: the session changed while we waited (signed out, or someone else signed in).
-      if (fresh == null || gen != _auth.generation) throw error;
+      // A null token means the session changed while we waited.
+      if (freshToken == null || generation != _auth.generation) throw error;
 
       try {
         return (await request()).data ?? const {};
       } on DioException catch (retry) {
         final retryError = mapError(retry);
-        if (retryError.status == 401) await _expire(gen);
+        if (retryError.status == 401) await _expire(generation);
         throw retryError;
       }
     }
@@ -159,10 +168,10 @@ class ApiClient extends GetxService {
     return header is String && header.startsWith('Bearer ') ? header.substring(7) : null;
   }
 
-  /// Ends the session that [gen] belongs to, once. A 401 from a session that has already ended
-  /// (or been replaced by another sign-in) changes nothing.
-  Future<void> _expire(int gen) async {
-    if (gen != _auth.generation) return;
+  // Ends the session that [generation] belongs to, once. A 401 from a session that has already ended,
+  // or been replaced by another sign-in, changes nothing.
+  Future<void> _expire(int generation) async {
+    if (generation != _auth.generation) return;
     await (_expiring ??= _endSession().whenComplete(() => _expiring = null));
   }
 
@@ -171,22 +180,24 @@ class ApiClient extends GetxService {
     await _onSessionExpired();
   }
 
+  /// Turns a Dio failure into an [ApiException] with Mongolian text. No response at all becomes
+  /// `NETWORK`. A response without the API's error shape, such as one from API Gateway, becomes `HTTP_<status>`.
   @visibleForTesting
   static ApiException mapError(DioException e) {
     final inner = e.error;
     if (inner is ApiException) return inner;
-    final res = e.response;
-    if (res == null) {
+    final response = e.response;
+    if (response == null) {
       return ApiException(code: 'NETWORK', message: S.noConnection);
     }
-    final data = res.data;
+    final status = response.statusCode;
+    final data = response.data;
     final error = data is Map ? data['error'] : null;
     if (error is! Map) {
-      return ApiException(
-        code: res.statusCode == 401 ? 'UNAUTHORIZED' : 'HTTP_${res.statusCode}',
-        message: res.statusCode == 401 ? S.sessionExpired : S.unexpectedResponse(res.statusCode),
-        status: res.statusCode,
-      );
+      if (status == 401) {
+        return ApiException(code: 'UNAUTHORIZED', message: S.sessionExpired, status: status);
+      }
+      return ApiException(code: 'HTTP_$status', message: S.unexpectedResponse(status), status: status);
     }
     final code = error['code'] is String ? error['code'] as String : 'UNKNOWN';
     final serverMessage = error['message'] is String ? error['message'] as String : null;
@@ -195,15 +206,15 @@ class ApiClient extends GetxService {
     final fields = <String, String>{};
     final details = error['details'];
     if (details is List) {
-      for (final d in details.whereType<Map<dynamic, dynamic>>()) {
-        final path = d['path'];
+      for (final detail in details.whereType<Map<dynamic, dynamic>>()) {
+        final path = detail['path'];
         if (path is String && path.isNotEmpty) fields.putIfAbsent(path, () => S.fieldError(path));
       }
     }
     return ApiException(
       code: code,
       message: S.apiError(code),
-      status: res.statusCode,
+      status: status,
       fieldErrors: fields,
       details: details is List ? List<Object?>.of(details) : const [],
       serverMessage: serverMessage,

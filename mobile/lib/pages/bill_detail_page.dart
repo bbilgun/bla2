@@ -1,3 +1,4 @@
+// The bill page: what's been collected, the QR code to share, the host's own items and the guests.
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -13,12 +14,17 @@ import '../domain/money.dart';
 import '../models/models.dart';
 import 'widgets.dart';
 
+/// The choices in the app bar menu.
 enum _BillAction { edit, status, newLink, delete }
 
+/// The choices in a guest's menu.
+enum _GuestAction { markPaid, markUnpaid, remove }
+
+/// One bill as its host sees it, kept up to date while guests claim items.
 class BillDetailPage extends GetView<BillDetailController> {
   const BillDetailPage({super.key});
 
-  /// Saved: show the editor's result. Backed out (or a save whose answer was lost): reload.
+  // Shows what the editor saved. If the user backed out, or a save's answer was lost, reloads instead.
   Future<void> _edit() async {
     final updated = await Get.toNamed<Object?>(Routes.editBillPath(controller.billId));
     if (updated is Bill) {
@@ -35,27 +41,29 @@ class BillDetailPage extends GetView<BillDetailController> {
       case _BillAction.status:
         await controller.setOpen(!bill.isOpen);
       case _BillAction.newLink:
-        final ok = await confirmAction(
+        final confirmed = await confirmAction(
           context,
           title: S.newLinkQuestion,
           message: S.newLinkWarning,
           confirmLabel: S.newLink,
         );
-        if (ok) await controller.rotateLink();
+        if (confirmed) await controller.rotateLink();
       case _BillAction.delete:
-        final ok = await confirmAction(
+        final confirmed = await confirmAction(
           context,
           title: S.deleteBill,
           message: S.deleteBillQuestion,
           confirmLabel: S.delete,
         );
-        if (ok && await controller.delete()) Get.back<void>();
+        if (!confirmed) return;
+        final deleted = await controller.delete();
+        if (deleted) Get.back<void>();
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    // Polling stops while another page (the editor) covers this one.
+    // Polling stops while another page, such as the editor, covers this one.
     return RouteVisibility(
       onCovered: () => controller.setCovered(true),
       onUncovered: () => controller.setCovered(false),
@@ -73,7 +81,7 @@ class BillDetailPage extends GetView<BillDetailController> {
                   const PopupMenuItem(value: _BillAction.newLink, child: Text(S.newLink)),
                   const PopupMenuItem(value: _BillAction.delete, child: Text(S.deleteBill)),
                 ],
-                onSelected: (a) => unawaited(_onAction(context, bill, a)),
+                onSelected: (action) => unawaited(_onAction(context, bill, action)),
               );
             }),
           ],
@@ -105,6 +113,7 @@ class BillDetailPage extends GetView<BillDetailController> {
   }
 }
 
+/// The QR code guests scan, with buttons to share or copy the link.
 class _QrCard extends StatelessWidget {
   const _QrCard({required this.bill, required this.controller});
 
@@ -134,8 +143,8 @@ class _QrCard extends StatelessWidget {
             Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(16)),
-              // Black on white whatever the theme: cameras read that best.
-              // High error correction leaves room for the logo in the middle and still scans in dim light.
+              // Black on white in either theme, because cameras read that best. High error correction
+              // leaves room for the logo in the middle and still scans in dim light.
               child: QrImageView(
                 data: bill.url,
                 size: 220,
@@ -178,7 +187,7 @@ class _QrCard extends StatelessWidget {
   }
 }
 
-/// What the guests owe you and how much of it has come in, as a bar.
+/// What the guests owe the host and how much of it has come in, with a progress bar.
 class _CollectedHero extends StatelessWidget {
   const _CollectedHero({required this.bill});
 
@@ -188,15 +197,15 @@ class _CollectedHero extends StatelessWidget {
   Widget build(BuildContext context) {
     final text = Theme.of(context).textTheme;
     final dark = Theme.of(context).brightness == Brightness.dark;
-    final bg = dark ? Brand.emeraldBright : Brand.emerald;
-    final fg = dark ? Brand.ink : Colors.white;
-    String money(int c) => formatCents(c, currency: bill.currency);
-    // A display ratio for the bar, not money math: both numbers come from the server.
+    final background = dark ? Brand.emeraldBright : Brand.emerald;
+    final foreground = dark ? Brand.ink : Colors.white;
+    String money(int cents) => formatCents(cents, currency: bill.currency);
+    // Only a ratio for the bar. Both amounts come from the server.
     final progress = bill.owedCents == 0 ? 0.0 : (bill.paidCents / bill.owedCents).clamp(0.0, 1.0);
     return Container(
       clipBehavior: Clip.antiAlias,
       decoration: ShapeDecoration(
-        color: bg,
+        color: background,
         shape: RoundedSuperellipseBorder(borderRadius: BorderRadius.circular(28)),
       ),
       child: Stack(
@@ -206,7 +215,7 @@ class _CollectedHero extends StatelessWidget {
             top: -28,
             child: CustomPaint(
               size: const Size.square(190),
-              painter: NetZeroMarkPainter(shape: MarkShape.none, foreground: fg.withValues(alpha: 0.09)),
+              painter: NetZeroMarkPainter(shape: MarkShape.none, foreground: foreground.withValues(alpha: 0.09)),
             ),
           ),
           Padding(
@@ -214,32 +223,38 @@ class _CollectedHero extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(S.collected, style: text.titleSmall?.copyWith(color: fg.withValues(alpha: 0.8))),
+                Text(S.collected, style: text.titleSmall?.copyWith(color: foreground.withValues(alpha: 0.8))),
                 const SizedBox(height: 6),
                 Text(
                   money(bill.paidCents),
-                  style: text.displaySmall?.copyWith(color: fg, fontFeatures: const [FontFeature.tabularFigures()]),
+                  style: text.displaySmall?.copyWith(
+                    color: foreground,
+                    fontFeatures: const [FontFeature.tabularFigures()],
+                  ),
                 ),
-                Text('/ ${money(bill.owedCents)}', style: text.titleMedium?.copyWith(color: fg.withValues(alpha: 0.8))),
+                Text(
+                  '/ ${money(bill.owedCents)}',
+                  style: text.titleMedium?.copyWith(color: foreground.withValues(alpha: 0.8)),
+                ),
                 const SizedBox(height: 14),
                 ClipRRect(
                   borderRadius: BorderRadius.circular(8),
                   child: LinearProgressIndicator(
                     value: progress,
                     minHeight: 10,
-                    color: fg,
-                    backgroundColor: fg.withValues(alpha: 0.2),
+                    color: foreground,
+                    backgroundColor: foreground.withValues(alpha: 0.2),
                   ),
                 ),
                 const SizedBox(height: 12),
                 Text(
                   '${S.total}: ${money(bill.totalCents)}',
-                  style: text.bodyMedium?.copyWith(color: fg, fontWeight: FontWeight.w600),
+                  style: text.bodyMedium?.copyWith(color: foreground, fontWeight: FontWeight.w600),
                 ),
                 if (bill.unclaimedCents > 0)
                   Text(
                     '${S.unclaimed}: ${money(bill.unclaimedCents)}',
-                    style: text.bodyMedium?.copyWith(color: fg, fontWeight: FontWeight.w800),
+                    style: text.bodyMedium?.copyWith(color: foreground, fontWeight: FontWeight.w800),
                   ),
               ],
             ),
@@ -250,19 +265,19 @@ class _CollectedHero extends StatelessWidget {
   }
 }
 
+/// The host's own items. Ticking one shares it with the guests who ticked it too.
 class _MyItems extends StatelessWidget {
   const _MyItems({required this.bill, required this.controller});
 
   final Bill bill;
   final BillDetailController controller;
 
-  // Own Obx: the page's Obx doesn't track the busy set read here.
   @override
   Widget build(BuildContext context) => Obx(() => _build(context));
 
   Widget _build(BuildContext context) {
     final text = Theme.of(context).textTheme;
-    // Optimistic: shows the tick before the server answers (see BillDetailController.toggleMine).
+    // Includes ticks that are still on their way to the server.
     final mine = controller.myItemIds;
     return Card(
       child: Padding(
@@ -288,11 +303,7 @@ class _MyItems extends StatelessWidget {
                 onChanged: bill.isOpen ? (_) => unawaited(controller.toggleMine(item.id)) : null,
                 controlAffinity: ListTileControlAffinity.leading,
                 title: Text(item.name),
-                subtitle: Text(
-                  item.claimedBy.isEmpty
-                      ? S.nobodyClaimed
-                      : item.claimedBy.map((id) => id == Bill.hostGuestId ? S.you : bill.nameOf(id)).join(', '),
-                ),
+                subtitle: Text(_claimedBy(item)),
                 secondary: Text(
                   formatCents(item.priceCents, currency: bill.currency),
                   style: const TextStyle(fontFeatures: [FontFeature.tabularFigures()]),
@@ -303,8 +314,15 @@ class _MyItems extends StatelessWidget {
       ),
     );
   }
+
+  String _claimedBy(BillItem item) {
+    if (item.claimedBy.isEmpty) return S.nobodyClaimed;
+    final names = item.claimedBy.map((guestId) => guestId == Bill.hostGuestId ? S.you : bill.nameOf(guestId));
+    return names.join(', ');
+  }
 }
 
+/// Everyone who joined, what they owe, whether they paid, and a menu to mark paid or remove them.
 class _Guests extends StatelessWidget {
   const _Guests({required this.bill, required this.controller});
 
@@ -312,32 +330,43 @@ class _Guests extends StatelessWidget {
   final BillDetailController controller;
 
   Future<void> _confirmRemove(BuildContext context, BillGuest guest) async {
-    final ok = await showDialog<bool>(
+    final confirmed = await showDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         content: Text(S.removeGuestQuestion(guest.name)),
         actions: [
-          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text(S.cancel)),
-          FilledButton(onPressed: () => Navigator.of(ctx).pop(true), child: const Text(S.remove)),
+          TextButton(onPressed: () => Navigator.of(dialogContext).pop(false), child: const Text(S.cancel)),
+          FilledButton(onPressed: () => Navigator.of(dialogContext).pop(true), child: const Text(S.remove)),
         ],
       ),
     );
-    if (ok == true) await controller.removeGuest(guest.id);
+    if (confirmed == true) await controller.removeGuest(guest.id);
   }
 
-  /// "Төлсөн", or the difference when their ticks changed after they marked it paid.
-  Widget? _guestStatus(BillGuest g, ColorScheme colors) {
-    String money(int c) => formatCents(c, currency: bill.currency);
-    if (g.paidCents == 0) return null;
-    if (g.dueCents > 0) {
+  Future<void> _onAction(BuildContext context, BillGuest guest, _GuestAction action) async {
+    switch (action) {
+      case _GuestAction.markPaid:
+        await controller.setPaid(guest, true);
+      case _GuestAction.markUnpaid:
+        await controller.setPaid(guest, false);
+      case _GuestAction.remove:
+        await _confirmRemove(context, guest);
+    }
+  }
+
+  // "Paid", or the difference when the guest changed their items after being marked paid.
+  Widget? _guestStatus(BillGuest guest, ColorScheme colors) {
+    String money(int cents) => formatCents(cents, currency: bill.currency);
+    if (guest.paidCents == 0) return null;
+    if (guest.dueCents > 0) {
       return Text(
-        '${S.paidShort(money(g.paidCents))} · ${S.stillOwes(money(g.dueCents))}',
+        '${S.paidShort(money(guest.paidCents))} · ${S.stillOwes(money(guest.dueCents))}',
         style: TextStyle(color: colors.error, fontWeight: FontWeight.w600),
       );
     }
-    if (g.dueCents < 0) {
+    if (guest.dueCents < 0) {
       return Text(
-        '${S.paidShort(money(g.paidCents))} · ${S.paidTooMuch(money(-g.dueCents))}',
+        '${S.paidShort(money(guest.paidCents))} · ${S.paidTooMuch(money(-guest.dueCents))}',
         style: TextStyle(color: colors.tertiary, fontWeight: FontWeight.w600),
       );
     }
@@ -365,32 +394,30 @@ class _Guests extends StatelessWidget {
               child: Text(S.guests, style: text.titleMedium),
             ),
             if (guests.isEmpty) const Padding(padding: EdgeInsets.fromLTRB(20, 8, 20, 4), child: Text(S.noGuestsYet)),
-            for (final g in guests)
+            for (final guest in guests)
               ListTile(
-                leading: Initials(g.name),
-                title: Text(g.name),
-                subtitle: _guestStatus(g, colors),
+                leading: Initials(guest.name),
+                title: Text(guest.name),
+                subtitle: _guestStatus(guest, colors),
                 trailing: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    MoneyText(g.totalCents, currency: bill.currency, style: text.titleSmall),
-                    controller.isBusy(g.id)
-                        ? const Padding(
-                            padding: EdgeInsets.all(12),
-                            child: SizedBox.square(dimension: 20, child: CircularProgressIndicator(strokeWidth: 2)),
-                          )
-                        : PopupMenuButton<String>(
-                            itemBuilder: (_) => [
-                              if (!g.paid) const PopupMenuItem(value: 'paid', child: Text(S.markPaid)),
-                              if (g.paidCents > 0) const PopupMenuItem(value: 'unpaid', child: Text(S.markUnpaid)),
-                              const PopupMenuItem(value: 'remove', child: Text(S.remove)),
-                            ],
-                            onSelected: (v) => unawaited(switch (v) {
-                              'paid' => controller.setPaid(g, true),
-                              'unpaid' => controller.setPaid(g, false),
-                              _ => _confirmRemove(context, g),
-                            }),
-                          ),
+                    MoneyText(guest.totalCents, currency: bill.currency, style: text.titleSmall),
+                    if (controller.isBusy(guest.id))
+                      const Padding(
+                        padding: EdgeInsets.all(12),
+                        child: SizedBox.square(dimension: 20, child: CircularProgressIndicator(strokeWidth: 2)),
+                      )
+                    else
+                      PopupMenuButton<_GuestAction>(
+                        itemBuilder: (_) => [
+                          if (!guest.paid) const PopupMenuItem(value: _GuestAction.markPaid, child: Text(S.markPaid)),
+                          if (guest.paidCents > 0)
+                            const PopupMenuItem(value: _GuestAction.markUnpaid, child: Text(S.markUnpaid)),
+                          const PopupMenuItem(value: _GuestAction.remove, child: Text(S.remove)),
+                        ],
+                        onSelected: (action) => unawaited(_onAction(context, guest, action)),
+                      ),
                   ],
                 ),
               ),

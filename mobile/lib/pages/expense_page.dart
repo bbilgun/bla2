@@ -1,3 +1,4 @@
+// The expense detail page: amount, splits and receipt, with edit and delete.
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -7,20 +8,26 @@ import 'package:image_picker/image_picker.dart';
 import '../app/strings.dart';
 import '../controllers/expense_controller.dart';
 import '../domain/money.dart';
+import '../models/models.dart';
 import 'widgets.dart';
 
+/// One expense: who paid, how it's split, and the receipt photo.
 class ExpensePage extends GetView<ExpenseController> {
   const ExpensePage({super.key});
 
   Future<void> _delete(BuildContext context) async {
-    final ok = await confirmAction(
+    final confirmed = await confirmAction(
       context,
       title: S.deleteExpense,
       message: S.deleteExpenseQuestion,
       confirmLabel: S.delete,
     );
-    if (ok && await controller.delete()) Get.back<void>();
+    if (!confirmed) return;
+    final deleted = await controller.delete();
+    if (deleted) Get.back<void>();
   }
+
+  String _nameOf(Group group, String userId) => userId == controller.detail.myUserId ? S.you : group.nameOf(userId);
 
   @override
   Widget build(BuildContext context) {
@@ -66,19 +73,12 @@ class ExpensePage extends GetView<ExpenseController> {
             ),
             const SizedBox(height: 4),
             Text(
-              S.expenseMeta(
-                expense.paidBy == controller.detail.myUserId ? S.you : group.nameOf(expense.paidBy),
-                shortDate(expense.createdAt),
-                expense.splitType.label,
-              ),
+              S.expenseMeta(_nameOf(group, expense.paidBy), S.date(expense.createdAt), expense.splitType.label),
               style: text.bodyMedium?.copyWith(color: scheme.onSurfaceVariant),
             ),
             if (expense.updatedAt != null && expense.updatedBy != null)
               Text(
-                S.editedBy(
-                  expense.updatedBy == controller.detail.myUserId ? S.you : group.nameOf(expense.updatedBy!),
-                  shortDate(expense.updatedAt!),
-                ),
+                S.editedBy(_nameOf(group, expense.updatedBy!), S.date(expense.updatedAt!)),
                 style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
               ),
             const SizedBox(height: 20),
@@ -87,13 +87,13 @@ class ExpensePage extends GetView<ExpenseController> {
                 padding: const EdgeInsets.symmetric(vertical: 8),
                 child: Column(
                   children: [
-                    for (final s in expense.splits)
+                    for (final split in expense.splits)
                       ListTile(
                         dense: true,
-                        leading: Initials(group.nameOf(s.userId), radius: 14),
-                        title: Text(group.nameOf(s.userId)),
+                        leading: Initials(group.nameOf(split.userId), radius: 14),
+                        title: Text(group.nameOf(split.userId)),
                         trailing: Text(
-                          formatCents(s.amountCents, currency: group.currency),
+                          formatCents(split.amountCents, currency: group.currency),
                           style: const TextStyle(fontFeatures: [FontFeature.tabularFigures()]),
                         ),
                       ),
@@ -137,6 +137,7 @@ class ExpensePage extends GetView<ExpenseController> {
     );
   }
 
+  // The receipt area: a spinner while loading or uploading, a placeholder, or the photo.
   Widget _receipt(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final box = BoxDecoration(color: scheme.surfaceContainerHigh, borderRadius: BorderRadius.circular(16));
@@ -172,7 +173,7 @@ class ExpensePage extends GetView<ExpenseController> {
           url,
           height: 260,
           width: double.infinity,
-          // Decode at screen width, not the photo's 2000px: less memory, faster first paint.
+          // Decode at screen width rather than the photo's 2000px, which saves memory and paints sooner.
           cacheWidth: (MediaQuery.sizeOf(context).width * MediaQuery.devicePixelRatioOf(context)).round(),
           fit: BoxFit.cover,
           errorBuilder: (_, _, _) => Container(
@@ -187,6 +188,7 @@ class ExpensePage extends GetView<ExpenseController> {
   }
 }
 
+/// The receipt on black, with pinch to zoom.
 class _FullScreenImage extends StatelessWidget {
   const _FullScreenImage(this.url);
 

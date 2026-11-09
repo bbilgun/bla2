@@ -1,14 +1,17 @@
+// The settle up page: who should pay whom, recording payments, and the payment history.
 import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
+import '../app/notify.dart';
 import '../app/strings.dart';
 import '../controllers/settle_up_controller.dart';
 import '../domain/money.dart';
 import '../models/models.dart';
 import 'widgets.dart';
 
+/// The suggested payments that would settle the group, and the payments already recorded.
 class SettleUpPage extends GetView<SettleUpController> {
   const SettleUpPage({super.key});
 
@@ -27,77 +30,18 @@ class SettleUpPage extends GetView<SettleUpController> {
           children: [
             Text(transfers.isEmpty ? S.everyoneSettled : S.settleUpHint, style: text.bodyMedium),
             const SizedBox(height: 16),
-            for (final t in transfers)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 10),
-                child: Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Row(
-                      children: [
-                        Initials(group.nameOf(t.fromUserId), radius: 16),
-                        const Padding(
-                          padding: EdgeInsets.symmetric(horizontal: 6),
-                          child: Icon(Icons.arrow_forward, size: 18),
-                        ),
-                        Initials(group.nameOf(t.toUserId), radius: 16),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(controller.describe(t), style: text.bodyMedium),
-                              MoneyText(
-                                t.amountCents,
-                                currency: group.currency,
-                                style: text.titleMedium?.copyWith(fontWeight: FontWeight.w700),
-                              ),
-                            ],
-                          ),
-                        ),
-                        if (controller.canRecord(t))
-                          controller.isBusy(t)
-                              ? const SizedBox.square(dimension: 24, child: CircularProgressIndicator(strokeWidth: 2))
-                              : FilledButton.tonal(
-                                  style: FilledButton.styleFrom(minimumSize: const Size(0, 40)),
-                                  onPressed: () => unawaited(_record(context, group, t)),
-                                  child: const Text(S.record),
-                                ),
-                      ],
-                    ),
-                  ),
-                ),
+            for (final transfer in transfers)
+              _TransferCard(
+                transfer,
+                group: group,
+                controller: controller,
+                onRecord: () => unawaited(_record(context, group, transfer)),
               ),
             if (history.items.isNotEmpty) ...[
               const SizedBox(height: 16),
               Text(S.recordedPayments, style: text.titleMedium),
               const SizedBox(height: 4),
-              for (final s in history.items)
-                ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  dense: true,
-                  title: Text(
-                    S.transfer(controller.nameFor(group, s.fromUserId), controller.nameFor(group, s.toUserId)),
-                  ),
-                  subtitle: Text(shortDate(s.createdAt)),
-                  trailing: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(formatCents(s.amountCents, currency: group.currency)),
-                      if (controller.canDelete(s))
-                        controller.deleting.contains(s.id)
-                            ? const Padding(
-                                padding: EdgeInsets.all(12),
-                                child: SizedBox.square(dimension: 20, child: CircularProgressIndicator(strokeWidth: 2)),
-                              )
-                            : IconButton(
-                                tooltip: S.deletePayment,
-                                icon: const Icon(Icons.delete_outline),
-                                onPressed: () => unawaited(_delete(context, s)),
-                              ),
-                    ],
-                  ),
-                ),
+              for (final settlement in history.items) _paymentRow(context, group, settlement),
               LoadMoreFooter(
                 hasMore: history.hasMore,
                 loading: history.loadingMore,
@@ -110,34 +54,120 @@ class SettleUpPage extends GetView<SettleUpController> {
     );
   }
 
-  Future<void> _delete(BuildContext context, Settlement s) async {
-    final ok = await confirmAction(
+  Widget _paymentRow(BuildContext context, Group group, Settlement settlement) {
+    final Widget? deleteButton;
+    if (!controller.canDelete(settlement)) {
+      deleteButton = null;
+    } else if (controller.deleting.contains(settlement.id)) {
+      deleteButton = const Padding(
+        padding: EdgeInsets.all(12),
+        child: SizedBox.square(dimension: 20, child: CircularProgressIndicator(strokeWidth: 2)),
+      );
+    } else {
+      deleteButton = IconButton(
+        tooltip: S.deletePayment,
+        icon: const Icon(Icons.delete_outline),
+        onPressed: () => unawaited(_delete(context, settlement)),
+      );
+    }
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      dense: true,
+      title: Text(
+        S.transfer(controller.nameFor(group, settlement.fromUserId), controller.nameFor(group, settlement.toUserId)),
+      ),
+      subtitle: Text(S.date(settlement.createdAt)),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(formatCents(settlement.amountCents, currency: group.currency)),
+          ?deleteButton,
+        ],
+      ),
+    );
+  }
+
+  Future<void> _delete(BuildContext context, Settlement settlement) async {
+    final confirmed = await confirmAction(
       context,
       title: S.deletePayment,
       message: S.deletePaymentQuestion,
       confirmLabel: S.delete,
     );
-    if (!ok) return;
-    final message = await controller.deleteSettlement(s);
-    if (message != null) Get.snackbar(S.actionFailed, message, snackPosition: SnackPosition.BOTTOM);
+    if (!confirmed) return;
+    final message = await controller.deleteSettlement(settlement);
+    if (message != null) notify(S.actionFailed, message);
   }
 
-  Future<void> _record(BuildContext context, Group group, Transfer t) async {
+  Future<void> _record(BuildContext context, Group group, Transfer transfer) async {
     final cents = await showDialog<int>(
       context: context,
       builder: (_) => _AmountDialog(
-        title: S.transfer(controller.nameFor(group, t.fromUserId), controller.nameFor(group, t.toUserId)),
+        title: S.transfer(controller.nameFor(group, transfer.fromUserId), controller.nameFor(group, transfer.toUserId)),
         currency: group.currency,
-        initialCents: t.amountCents,
+        initialCents: transfer.amountCents,
       ),
     );
     if (cents == null) return;
-    final message = await controller.record(t, cents);
-    if (message != null) Get.snackbar(S.notRecorded, message, snackPosition: SnackPosition.BOTTOM);
+    final message = await controller.record(transfer, cents);
+    if (message != null) notify(S.notRecorded, message);
   }
 }
 
-/// The amount actually paid (a partial payment is fine). Owns (and disposes) its text controller.
+/// One suggested payment, with a button to record it when the user is the payer or receiver.
+class _TransferCard extends StatelessWidget {
+  const _TransferCard(this.transfer, {required this.group, required this.controller, required this.onRecord});
+
+  final Transfer transfer;
+  final Group group;
+  final SettleUpController controller;
+  final VoidCallback onRecord;
+
+  @override
+  Widget build(BuildContext context) {
+    final text = Theme.of(context).textTheme;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Card(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Row(
+            children: [
+              Initials(group.nameOf(transfer.fromUserId), radius: 16),
+              const Padding(padding: EdgeInsets.symmetric(horizontal: 6), child: Icon(Icons.arrow_forward, size: 18)),
+              Initials(group.nameOf(transfer.toUserId), radius: 16),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(controller.describe(transfer), style: text.bodyMedium),
+                    MoneyText(
+                      transfer.amountCents,
+                      currency: group.currency,
+                      style: text.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+                    ),
+                  ],
+                ),
+              ),
+              if (controller.canRecord(transfer))
+                if (controller.isBusy(transfer))
+                  const SizedBox.square(dimension: 24, child: CircularProgressIndicator(strokeWidth: 2))
+                else
+                  FilledButton.tonal(
+                    style: FilledButton.styleFrom(minimumSize: const Size(0, 40)),
+                    onPressed: onRecord,
+                    child: const Text(S.record),
+                  ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Asks how much was actually paid, starting from the suggested amount. A partial payment is fine.
 class _AmountDialog extends StatefulWidget {
   const _AmountDialog({required this.title, required this.currency, required this.initialCents});
 
@@ -161,7 +191,10 @@ class _AmountDialogState extends State<_AmountDialog> {
 
   void _submit() {
     final cents = tryParseCents(_amount.text, currency: widget.currency);
-    if (cents == null || cents <= 0) return setState(() => _error = S.amountHint);
+    if (cents == null || cents <= 0) {
+      setState(() => _error = S.amountHint);
+      return;
+    }
     Navigator.of(context).pop(cents);
   }
 

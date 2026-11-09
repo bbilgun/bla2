@@ -1,18 +1,21 @@
+// A list that loads a page at a time, shared by the groups, expenses, bills and payments lists.
 import 'package:get/get.dart';
 
 import '../models/models.dart';
 
 /// A newest-first list loaded a page at a time with a cursor.
 ///
-/// - [reload] / [setFirstPage] start over, and a [loadMore] still in flight is thrown away when it
-///   lands (a generation check), so pages can't be appended out of order or onto a fresh list.
-/// - After a failed [loadMore], [shouldAutoLoad] stays false until [loadMore] is called again
-///   (the "load more" button), so a list that keeps failing doesn't retry in a tight loop.
+/// Starting over with [reload] or [setFirstPage] makes any [loadMore] still in flight throw its page
+/// away when it lands, so pages can't be appended out of order or onto a fresh list. After a failed
+/// [loadMore], [shouldAutoLoad] stays false until [loadMore] is called again from the "load more"
+/// button, so a list that keeps failing doesn't retry in a loop.
 class CursorList<T> {
+  /// [fetchPage] gets one page, starting after the given cursor, or the first page for null.
   CursorList(this._fetchPage);
 
   final Future<CursorPage<T>> Function(String? cursor) _fetchPage;
 
+  /// The rows loaded so far.
   final items = <T>[].obs;
   final _loadingMore = false.obs;
   final _hasMore = false.obs;
@@ -20,21 +23,27 @@ class CursorList<T> {
   String? _cursor;
   int _generation = 0;
 
+  /// Whether the next page is being fetched.
   bool get loadingMore => _loadingMore.value;
+
+  /// Whether the server has more pages.
   bool get hasMore => _hasMore.value;
+
+  /// Whether the last [loadMore] failed.
   bool get loadMoreFailed => _failed.value;
 
-  /// The list may fetch the next page by itself when its last row is built.
+  /// Whether the list may fetch the next page by itself when its last row is built.
   bool get shouldAutoLoad => _hasMore.value && !_failed.value && !_loadingMore.value;
 
-  /// Fetches the first page and replaces everything with it. Throws on failure (the list is kept).
+  /// Fetches the first page and replaces everything with it. On failure it throws and keeps the list.
   Future<void> reload() async {
-    final gen = ++_generation;
+    _generation++;
+    final generation = _generation;
     final page = await _fetchPage(null);
-    if (gen == _generation) setFirstPage(page);
+    if (generation == _generation) setFirstPage(page);
   }
 
-  /// Replaces everything with [page], fetched by the caller (e.g. together with other data).
+  /// Replaces everything with [page], which the caller fetched, for example together with other data.
   void setFirstPage(CursorPage<T> page) {
     _generation++;
     items.assignAll(page.items);
@@ -44,27 +53,29 @@ class CursorList<T> {
     _loadingMore.value = false;
   }
 
-  /// Appends the next page. Rethrows a failure after marking it, so the caller can say so.
+  /// Appends the next page. A failure is recorded in [loadMoreFailed] and rethrown, so the caller
+  /// can tell the user.
   Future<void> loadMore() async {
     final cursor = _cursor;
     if (cursor == null || _loadingMore.value) return;
-    final gen = _generation;
+    final generation = _generation;
     _loadingMore.value = true;
     _failed.value = false;
     try {
       final page = await _fetchPage(cursor);
-      if (gen != _generation) return; // the list started over meanwhile
+      // The list started over while this page was loading.
+      if (generation != _generation) return;
       items.addAll(page.items);
       _cursor = page.nextCursor;
       _hasMore.value = page.nextCursor != null;
     } catch (_) {
-      if (gen == _generation) _failed.value = true;
+      if (generation == _generation) _failed.value = true;
       rethrow;
     } finally {
-      if (gen == _generation) _loadingMore.value = false;
+      if (generation == _generation) _loadingMore.value = false;
     }
   }
 
-  /// Removes one row (it was deleted on the server) without refetching.
+  /// Drops rows that were deleted on the server, without refetching.
   void removeWhere(bool Function(T item) test) => items.removeWhere(test);
 }

@@ -1,3 +1,4 @@
+// The sign-in, sign-up, confirm-code and password reset pages. They share one AuthController.
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -10,13 +11,7 @@ import '../controllers/auth_controller.dart';
 import '../domain/validators.dart';
 import 'widgets.dart';
 
-String? _required(String? v, String message) => validateRequired(v, message);
-
-String? _email(String? v) => validateEmail(v);
-
-String? _password(String? v) => validateNewPassword(v);
-
-/// The submit button: a spinner while [loading].
+/// A page's submit button. It shows a spinner and ignores taps while a request runs.
 class _Submit extends StatelessWidget {
   const _Submit({required this.controller, required this.label, required this.onPressed});
 
@@ -35,6 +30,7 @@ class _Submit extends StatelessWidget {
   );
 }
 
+/// The controller's neutral notice, such as "we sent a code", when there is one.
 class _Info extends StatelessWidget {
   const _Info({required this.controller});
 
@@ -43,15 +39,15 @@ class _Info extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Obx(() {
     final info = controller.info.value;
-    return info == null
-        ? const SizedBox.shrink()
-        : Padding(
-            padding: const EdgeInsets.only(bottom: 12),
-            child: Text(info, style: Theme.of(context).textTheme.bodyMedium),
-          );
+    if (info == null) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Text(info, style: Theme.of(context).textTheme.bodyMedium),
+    );
   });
 }
 
+/// The layout every auth page shares: the mark, a title, a subtitle and the form.
 class _AuthScaffold extends StatelessWidget {
   const _AuthScaffold({required this.title, required this.subtitle, required this.child, this.showBack = false});
 
@@ -94,6 +90,7 @@ class _AuthScaffold extends StatelessWidget {
   }
 }
 
+/// Email and password sign-in, with links to sign up and to reset a forgotten password.
 class SignInPage extends GetView<AuthController> {
   const SignInPage({super.key});
 
@@ -114,7 +111,7 @@ class SignInPage extends GetView<AuthController> {
               keyboardType: TextInputType.emailAddress,
               autofillHints: const [AutofillHints.email],
               textInputAction: TextInputAction.next,
-              validator: _email,
+              validator: validateEmail,
             ),
             const SizedBox(height: 12),
             TextFormField(
@@ -123,7 +120,7 @@ class SignInPage extends GetView<AuthController> {
               obscureText: true,
               autofillHints: const [AutofillHints.password],
               onFieldSubmitted: (_) => unawaited(controller.signIn()),
-              validator: (v) => _required(v, S.enterPassword),
+              validator: (value) => validateRequired(value, S.enterPassword),
             ),
             Align(
               alignment: Alignment.centerRight,
@@ -148,6 +145,7 @@ class SignInPage extends GetView<AuthController> {
   }
 }
 
+/// Creates an account with a name, email and password.
 class SignUpPage extends GetView<AuthController> {
   const SignUpPage({super.key});
 
@@ -168,7 +166,7 @@ class SignUpPage extends GetView<AuthController> {
               textCapitalization: TextCapitalization.words,
               autofillHints: const [AutofillHints.name],
               textInputAction: TextInputAction.next,
-              validator: (v) => _required(v, S.enterName),
+              validator: (value) => validateRequired(value, S.enterName),
             ),
             const SizedBox(height: 12),
             TextFormField(
@@ -177,7 +175,7 @@ class SignUpPage extends GetView<AuthController> {
               keyboardType: TextInputType.emailAddress,
               autofillHints: const [AutofillHints.email],
               textInputAction: TextInputAction.next,
-              validator: _email,
+              validator: validateEmail,
             ),
             const SizedBox(height: 12),
             TextFormField(
@@ -186,7 +184,7 @@ class SignUpPage extends GetView<AuthController> {
               obscureText: true,
               autofillHints: const [AutofillHints.newPassword],
               onFieldSubmitted: (_) => unawaited(controller.signUp()),
-              validator: _password,
+              validator: validateNewPassword,
               autovalidateMode: AutovalidateMode.onUserInteraction,
             ),
             const SizedBox(height: 16),
@@ -200,6 +198,7 @@ class SignUpPage extends GetView<AuthController> {
   }
 }
 
+/// Takes the code emailed after sign-up, then signs the user in.
 class ConfirmPage extends GetView<AuthController> {
   const ConfirmPage({super.key});
 
@@ -220,7 +219,7 @@ class ConfirmPage extends GetView<AuthController> {
               keyboardType: TextInputType.number,
               autofillHints: const [AutofillHints.oneTimeCode],
               onFieldSubmitted: (_) => unawaited(controller.confirm()),
-              validator: (v) => _required(v, S.enterCode),
+              validator: (value) => validateRequired(value, S.enterCode),
             ),
             const SizedBox(height: 12),
             _Info(controller: controller),
@@ -236,6 +235,7 @@ class ConfirmPage extends GetView<AuthController> {
   }
 }
 
+/// Asks for the email to send a password reset code to.
 class ForgotPasswordPage extends GetView<AuthController> {
   const ForgotPasswordPage({super.key});
 
@@ -256,7 +256,7 @@ class ForgotPasswordPage extends GetView<AuthController> {
               keyboardType: TextInputType.emailAddress,
               autofillHints: const [AutofillHints.email],
               onFieldSubmitted: (_) => unawaited(controller.sendResetCode()),
-              validator: _email,
+              validator: validateEmail,
             ),
             const SizedBox(height: 16),
             Obx(() => InlineError(controller.error.value)),
@@ -269,6 +269,7 @@ class ForgotPasswordPage extends GetView<AuthController> {
   }
 }
 
+/// Takes the reset code and a new password, then signs the user in.
 class ResetPasswordPage extends GetView<AuthController> {
   const ResetPasswordPage({super.key});
 
@@ -289,7 +290,7 @@ class ResetPasswordPage extends GetView<AuthController> {
               keyboardType: TextInputType.number,
               autofillHints: const [AutofillHints.oneTimeCode],
               textInputAction: TextInputAction.next,
-              validator: (v) => _required(v, S.enterCode),
+              validator: (value) => validateRequired(value, S.enterCode),
             ),
             const SizedBox(height: 12),
             TextFormField(
@@ -302,7 +303,7 @@ class ResetPasswordPage extends GetView<AuthController> {
               obscureText: true,
               autofillHints: const [AutofillHints.newPassword],
               onFieldSubmitted: (_) => unawaited(controller.setNewPassword()),
-              validator: _password,
+              validator: validateNewPassword,
               autovalidateMode: AutovalidateMode.onUserInteraction,
             ),
             const SizedBox(height: 12),

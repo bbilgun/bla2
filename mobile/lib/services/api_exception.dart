@@ -1,8 +1,8 @@
+// The error type every API call throws.
 import '../app/strings.dart';
 
-/// Every API failure, mapped from the server's `{ error: { code, message, details } }`.
-/// [message] is always Mongolian text for the person ([S.apiError]); [serverMessage] is the
-/// server's English wording, kept for debugging.
+/// A failed API call. The server sends `{ error: { code, message, details } }`, and [ApiClient.mapError]
+/// turns that, or a network failure, into one of these.
 class ApiException implements Exception {
   ApiException({
     required this.code,
@@ -13,26 +13,33 @@ class ApiException implements Exception {
     this.serverMessage,
   });
 
+  /// The server's error code, such as `EXPENSE_NOT_FOUND`, or `NETWORK` when no answer arrived.
   final String code;
+
+  /// Mongolian text to show the user, from [S.apiError].
   final String message;
+
+  /// The server's own English message, kept for debugging and never shown.
   final String? serverMessage;
+
+  /// HTTP status, or null when the request never got an answer.
   final int? status;
 
-  /// Server validation errors keyed by field path ("amountCents", "split.shares.0.userId").
+  /// Server validation errors keyed by field path, such as "amountCents" or "split.shares.0.userId".
   final Map<String, String> fieldErrors;
 
-  /// The server's `details` as sent, e.g. `[{groupId, name}]` with BALANCES_NOT_ZERO.
+  /// The server's `details` as sent. With `BALANCES_NOT_ZERO` it lists the unsettled groups.
   final List<Object?> details;
 
-  /// True when the request may or may not have reached the server (timeout, no connection).
-  /// Retrying a money write with the same Idempotency-Key is safe in exactly this case.
+  /// Whether the request may or may not have reached the server, as with a timeout or no connection.
+  /// This is the one case where retrying a write with the same Idempotency-Key is the right move.
   bool get isNetwork => code == 'NETWORK';
 
   @override
   String toString() => message;
 }
 
-/// You are not in this group (or it doesn't exist). The server doesn't say which, on purpose.
+/// The group doesn't exist or the caller isn't in it. The server deliberately doesn't say which.
 class GroupNotFoundException extends ApiException {
   GroupNotFoundException({super.serverMessage})
     : super(code: 'GROUP_NOT_FOUND', message: S.apiError('GROUP_NOT_FOUND'), status: 404);

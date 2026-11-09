@@ -1,6 +1,7 @@
 # NetZero mobile
 
-Flutter + GetX client for the NetZero API. See the [root README](../README.md) for setup.
+Flutter + GetX client for the NetZero API. See the [root README](../README.md) for setup, and
+[docs/mobile.md](../docs/mobile.md) for a guided tour of the code.
 
 ```bash
 flutter run --dart-define-from-file=env/dev.json   # env/dev.json comes from backend/scripts/stack-outputs.sh dev

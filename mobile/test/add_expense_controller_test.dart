@@ -1,12 +1,14 @@
+// AddExpenseController: the Idempotency-Key on save, currencies, and the request body.
 import 'package:flutter_test/flutter_test.dart';
 import 'package:netzero/controllers/add_expense_controller.dart';
 import 'package:netzero/models/models.dart';
 import 'package:netzero/repositories/repositories.dart';
-import 'package:netzero/services/api_client.dart';
 
-/// Records every create() call; fails the first [failures] calls with a network error.
-class FakeExpenses implements ExpensesRepository {
-  FakeExpenses({this.failures = 0});
+import 'fakes.dart';
+
+/// Records every create() call. The first [failures] calls fail as if offline.
+class RecordingExpenses implements ExpensesRepository {
+  RecordingExpenses({this.failures = 0});
 
   int failures;
   final calls = <({Map<String, dynamic> body, String key})>[];
@@ -16,7 +18,7 @@ class FakeExpenses implements ExpensesRepository {
     calls.add((body: body, key: idempotencyKey));
     if (failures > 0) {
       failures--;
-      throw ApiException(code: 'NETWORK', message: 'offline');
+      throw networkError();
     }
     return Expense(
       id: 'e${calls.length}',
@@ -35,89 +37,85 @@ class FakeExpenses implements ExpensesRepository {
   dynamic noSuchMethod(Invocation invocation) => throw UnimplementedError();
 }
 
-final flat = Group(
-  id: 'g1',
-  name: 'Flat',
-  currency: 'USD',
-  members: const [
-    Member(userId: 'a', email: 'a@x.com', name: 'Anu'),
-    Member(userId: 'b', email: 'b@x.com', name: 'Bat'),
-    Member(userId: 'c', email: 'c@x.com', name: 'Saraa'),
-  ],
-  createdAt: DateTime.utc(2026, 11, 1),
-);
-
-AddExpenseController make(FakeExpenses repo) {
-  final c = AddExpenseController(group: flat, myUserId: 'a', expenses: repo);
-  c.description.text = 'Dinner';
-  c.amount.text = '100.00';
-  return c;
+/// A form for a 100.00 dinner in the Flat group, entered by Anu.
+AddExpenseController dinnerForm(RecordingExpenses repo) {
+  final form = AddExpenseController(group: groupOf(), myUserId: 'a', expenses: repo);
+  form.description.text = 'Dinner';
+  form.amount.text = '100.00';
+  return form;
 }
 
 void main() {
-  group('exit check: Save, network drops, Save again', () {
-    test('the retry sends the same Idempotency-Key, and it is dropped after success', () async {
-      final repo = FakeExpenses(failures: 1);
-      final c = make(repo);
+  group('Idempotency-Key', () {
+    test('a retry after a network error sends the same key, which is dropped after success', () async {
+      final repo = RecordingExpenses(failures: 1);
+      final form = dinnerForm(repo);
 
-      expect(await c.save(), isNull); // network error
+      expect(await form.save(), isNull);
+
       final firstKey = repo.calls.single.key;
-      expect(c.pendingIdempotencyKey, firstKey);
-      expect(c.error.value, contains('давхар бүртгэгдэхгүй'));
+      expect(form.pendingIdempotencyKey, firstKey);
+      expect(form.error.value, contains('давхар бүртгэгдэхгүй'));
 
-      expect(await c.save(), isNotNull); // retry succeeds
+      expect(await form.save(), isNotNull);
+
       expect(repo.calls.map((call) => call.key), [firstKey, firstKey]);
-      expect(c.pendingIdempotencyKey, isNull);
+      expect(form.pendingIdempotencyKey, isNull);
     });
 
-    test('editing the form after a failure makes it a new request with a new key', () async {
-      final repo = FakeExpenses(failures: 1);
-      final c = make(repo);
-      await c.save();
-      c.amount.text = '120.00';
-      await c.save();
+    test('changing the form after a failure makes a new request with a new key', () async {
+      final repo = RecordingExpenses(failures: 1);
+      final form = dinnerForm(repo);
+
+      await form.save();
+      form.amount.text = '120.00';
+      await form.save();
+
       expect(repo.calls[0].key, isNot(repo.calls[1].key));
     });
 
     test('two separate expenses never share a key', () async {
-      final repo = FakeExpenses();
-      final c = make(repo);
-      await c.save();
-      await c.save();
+      final repo = RecordingExpenses();
+      final form = dinnerForm(repo);
+
+      await form.save();
+      await form.save();
+
       expect(repo.calls[0].key, isNot(repo.calls[1].key));
     });
   });
 
-  group('currencies without minor units', () {
-    test('KRW amounts are whole won: "25,000" is 25000', () {
-      final krw = Group(
-        id: 'g2',
-        name: 'Seoul',
-        currency: 'KRW',
-        members: flat.members,
-        createdAt: DateTime.utc(2026, 11, 1),
-      );
-      final c = AddExpenseController(group: krw, myUserId: 'a', expenses: FakeExpenses())
+  group('currencies without decimals', () {
+    test('KRW amounts are whole won', () {
+      final seoul = groupOf(id: 'g2', name: 'Seoul', currency: 'KRW');
+      final form = AddExpenseController(group: seoul, myUserId: 'a', expenses: RecordingExpenses())
         ..description.text = 'Bibimbap'
         ..amount.text = '25,000';
-      expect(c.amountCents, 25000);
-      c.amount.text = '25000.50';
-      expect(c.amountCents, isNull);
+
+      expect(form.amountCents, 25000);
+
+      form.amount.text = '25000.50';
+
+      expect(form.amountCents, isNull);
     });
   });
 
-  test('splitting percent evenly fills the fields with the same format as formatBasisPoints', () {
-    final c = make(FakeExpenses())..splitType.value = SplitType.percent;
-    c.splitPercentEvenly();
-    expect(c.percentCtrls['a']!.text, '33.34');
-    expect(c.percentCtrls['b']!.text, '33.33');
+  test('splitting percentages evenly gives the leftover to the first row', () {
+    final form = dinnerForm(RecordingExpenses())..splitType.value = SplitType.percent;
+
+    form.splitPercentEvenly();
+
+    expect(form.percentFields['a']!.text, '33.34');
+    expect(form.percentFields['b']!.text, '33.33');
   });
 
-  group('body', () {
-    test('EVEN sends intent, not amounts', () {
-      final c = make(FakeExpenses());
-      c.toggleIncluded('c');
-      expect(c.buildBody(), {
+  group('request body', () {
+    test('an even split sends who is in, not amounts', () {
+      final form = dinnerForm(RecordingExpenses());
+
+      form.toggleIncluded('c');
+
+      expect(form.buildBody(), {
         'description': 'Dinner',
         'amountCents': 10000,
         'paidBy': 'a',
@@ -128,28 +126,32 @@ void main() {
       });
     });
 
-    test('EXACT must add up before it is sent', () {
-      final c = make(FakeExpenses())..splitType.value = SplitType.exact;
-      c.exactCtrls['a']!.text = '60';
-      c.exactCtrls['b']!.text = '30';
-      expect(c.exactRemainingCents, 1000);
-      expect(c.buildBody(), isNull);
-      expect(c.fieldErrors['split'], contains(r'$100.00'));
+    test('exact shares must add up before anything is sent', () {
+      final form = dinnerForm(RecordingExpenses())..splitType.value = SplitType.exact;
+      form.exactFields['a']!.text = '60';
+      form.exactFields['b']!.text = '30';
 
-      c.exactCtrls['c']!.text = '10.00';
-      expect(c.exactRemainingCents, 0);
-      expect((c.buildBody()!['split'] as Map)['shares'], [
+      expect(form.exactRemainingCents, 1000);
+      expect(form.buildBody(), isNull);
+      expect(form.fieldErrors['split'], contains(r'$100.00'));
+
+      form.exactFields['c']!.text = '10.00';
+
+      expect(form.exactRemainingCents, 0);
+      expect((form.buildBody()!['split'] as Map)['shares'], [
         {'userId': 'a', 'amountCents': 6000},
         {'userId': 'b', 'amountCents': 3000},
         {'userId': 'c', 'amountCents': 1000},
       ]);
     });
 
-    test('PERCENT sends basis points', () {
-      final c = make(FakeExpenses())..splitType.value = SplitType.percent;
-      c.splitPercentEvenly();
-      expect(c.percentAssignedBp, 10000);
-      expect((c.buildBody()!['split'] as Map)['shares'], [
+    test('a percent split sends basis points', () {
+      final form = dinnerForm(RecordingExpenses())..splitType.value = SplitType.percent;
+
+      form.splitPercentEvenly();
+
+      expect(form.percentAssignedBp, 10000);
+      expect((form.buildBody()!['split'] as Map)['shares'], [
         {'userId': 'a', 'basisPoints': 3334},
         {'userId': 'b', 'basisPoints': 3333},
         {'userId': 'c', 'basisPoints': 3333},
@@ -157,11 +159,12 @@ void main() {
     });
 
     test('missing fields are reported next to the field', () {
-      final c = make(FakeExpenses());
-      c.description.text = '';
-      c.amount.text = '12.345';
-      expect(c.buildBody(), isNull);
-      expect(c.fieldErrors.keys, containsAll(['description', 'amount']));
+      final form = dinnerForm(RecordingExpenses());
+      form.description.text = '';
+      form.amount.text = '12.345';
+
+      expect(form.buildBody(), isNull);
+      expect(form.fieldErrors.keys, containsAll(['description', 'amount']));
     });
   });
 }

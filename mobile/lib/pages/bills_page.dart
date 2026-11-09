@@ -1,3 +1,4 @@
+// The bills tab: the user's QR bills, newest first.
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -10,6 +11,7 @@ import '../domain/money.dart';
 import '../models/models.dart';
 import 'widgets.dart';
 
+/// Lists the bills the user hosts, with a button to create one.
 class BillsPage extends GetView<BillsController> {
   const BillsPage({super.key});
 
@@ -19,6 +21,7 @@ class BillsPage extends GetView<BillsController> {
       appBar: AppBar(
         title: const Text(S.billsTitle),
         actions: [
+          // The groups tab already loads the profile, so borrow its name for the avatar.
           Obx(
             () => AccountButton(
               name: Get.isRegistered<GroupsController>() ? Get.find<GroupsController>().me.value?.name : null,
@@ -53,18 +56,19 @@ class BillsPage extends GetView<BillsController> {
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 96),
             itemCount: bills.length + 1,
             separatorBuilder: (_, _) => const SizedBox(height: 10),
-            itemBuilder: (_, i) {
-              if (i == bills.length) {
+            itemBuilder: (_, index) {
+              if (index == bills.length) {
                 return LoadMoreFooter(
                   hasMore: list.hasMore,
                   loading: list.loadingMore,
                   onLoadMore: () => unawaited(controller.loadMore()),
                 );
               }
-              if (autoLoad && i == bills.length - 1) {
+              // Building the last row fetches the next page, after this frame so it doesn't rebuild mid-build.
+              if (autoLoad && index == bills.length - 1) {
                 WidgetsBinding.instance.addPostFrameCallback((_) => unawaited(controller.loadMore()));
               }
-              return _BillTile(bills[i], onTap: (id) => unawaited(controller.open(id)));
+              return _BillTile(bills[index], onTap: (id) => unawaited(controller.open(id)));
             },
           ),
         );
@@ -73,6 +77,7 @@ class BillsPage extends GetView<BillsController> {
   }
 }
 
+/// One bill in the list: title, date, status, total and how many guests have paid.
 class _BillTile extends StatelessWidget {
   const _BillTile(this.bill, {required this.onTap});
 
@@ -112,7 +117,7 @@ class _BillTile extends StatelessWidget {
                     Text(bill.title, style: text.titleMedium, maxLines: 1, overflow: TextOverflow.ellipsis),
                     const SizedBox(height: 2),
                     Text(
-                      '${shortDate(bill.createdAt)} · ${bill.isOpen ? S.billOpen : S.billClosed}',
+                      '${S.date(bill.createdAt)} · ${bill.isOpen ? S.billOpen : S.billClosed}',
                       style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
                     ),
                   ],
@@ -146,6 +151,7 @@ class _BillTile extends StatelessWidget {
   }
 }
 
+/// What the tab shows before the first bill, explaining what bills are for.
 class _EmptyBills extends StatelessWidget {
   const _EmptyBills();
 

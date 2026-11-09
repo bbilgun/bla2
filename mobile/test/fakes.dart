@@ -1,4 +1,5 @@
-// Shared fakes for controller and service tests. No network, no AWS, no widget tree.
+// Fakes and sample data shared by the controller and service tests. Nothing here touches the
+// network, AWS or a widget tree.
 import 'dart:async';
 
 import 'package:netzero/app/notify.dart';
@@ -10,24 +11,27 @@ import 'package:netzero/services/cognito_backend.dart';
 /// Snackbars shown during a test, as "title: message".
 final shown = <String>[];
 
-/// Call in setUp: controllers' snackbars go to [shown] instead of a GetX overlay.
+/// Call in setUp so controllers' snackbars land in [shown] instead of a GetX overlay.
 void recordNotifications() {
   shown.clear();
   notifier = (title, message) => shown.add(message.isEmpty ? title : '$title: $message');
 }
 
+/// The error a request gets when it never reaches the server.
 ApiException networkError() => ApiException(code: 'NETWORK', message: 'offline');
 
+/// A server error with [code] as both its code and its message.
 ApiException apiError(String code, {int status = 409, List<Object?> details = const []}) =>
     ApiException(code: code, message: code, status: status, details: details);
 
-// ---------------------------------------------------------------- Cognito
+// Cognito
 
+/// Tokens for [user] that expire at [expires].
 AuthTokens tokens(String idToken, {String user = 'user-a', required DateTime expires}) =>
     AuthTokens(idToken: idToken, userId: user, expiresAt: expires);
 
-/// Cognito, scripted. Each call runs the matching handler; tests replace handlers to make calls
-/// slow (a Completer), fail, or answer for another user. [log] records the order of events.
+/// A scripted Cognito. Each call runs the matching handler, and tests swap handlers to make a call
+/// slow, fail, or answer for another user. [log] records the order of events.
 class FakeCognito implements CognitoBackend {
   FakeCognito({this.stored, required this.now});
 
@@ -53,18 +57,18 @@ class FakeCognito implements CognitoBackend {
   Future<AuthTokens> session() async {
     sessionCalls++;
     log.add('session');
-    final t = await onSession();
+    final result = await onSession();
     log.add('session done');
-    return t;
+    return result;
   }
 
   @override
   Future<AuthTokens> refresh() async {
     refreshCalls++;
     log.add('refresh');
-    final t = await onRefresh();
+    final result = await onRefresh();
     log.add('refresh done');
-    return t;
+    return result;
   }
 
   @override
@@ -100,12 +104,13 @@ class FakeCognito implements CognitoBackend {
   Future<void> resendCode(String username) async => log.add('resendCode $username');
 }
 
-// ---------------------------------------------------------------- models
+// Sample data
 
 const anu = Member(userId: 'a', email: 'a@x.com', name: 'Anu');
 const bat = Member(userId: 'b', email: 'b@x.com', name: 'Bat');
 const saraa = Member(userId: 'c', email: 'c@x.com', name: 'Saraa');
 
+/// A group called Flat with Anu, Bat and Saraa, unless told otherwise.
 Group groupOf({
   String id = 'g1',
   String name = 'Flat',
@@ -121,6 +126,7 @@ Group groupOf({
   createdAt: DateTime.utc(2026, 11, 1),
 );
 
+/// A 90.00 dinner paid by Anu and split three ways, unless told otherwise.
 Expense expenseOf(
   String id, {
   String groupId = 'g1',
@@ -151,9 +157,9 @@ Expense expenseOf(
 
 const emptyBalances = Balances(currency: 'USD', balances: [], transfers: []);
 
-// ---------------------------------------------------------------- repositories
+// Repositories
 
-/// Groups, scripted per call.
+/// A groups repository that keeps one group in memory and records the writes it receives.
 class FakeGroups implements GroupsRepository {
   FakeGroups({Group? group}) : group = group ?? groupOf();
 
@@ -201,13 +207,13 @@ class FakeGroups implements GroupsRepository {
 
   @override
   Future<Group> cancelInvite(String groupId, String inviteId) => _write('cancel $inviteId', () {
-    group = groupOf(invites: [...group.invites.where((i) => i.id != inviteId)]);
+    group = groupOf(invites: [...group.invites.where((invite) => invite.id != inviteId)]);
     return group;
   });
 
   @override
   Future<Group> removeMember(String groupId, String userId) => _write('remove $userId', () {
-    group = groupOf(members: [...group.members.where((m) => m.userId != userId)]);
+    group = groupOf(members: [...group.members.where((member) => member.userId != userId)]);
     return group;
   });
 
@@ -224,7 +230,7 @@ class FakeGroups implements GroupsRepository {
   dynamic noSuchMethod(Invocation invocation) => throw UnimplementedError('${invocation.memberName}');
 }
 
-/// Expense pages served from a list in pages of [pageSize]; each list() can be held with [gate].
+/// Serves [all] in pages of [pageSize]. Any list() call can be held back with [gate].
 class FakeExpenses implements ExpensesRepository {
   FakeExpenses(this.all, {this.pageSize = 2});
 
@@ -234,7 +240,7 @@ class FakeExpenses implements ExpensesRepository {
   final updates = <({String id, Map<String, dynamic> body, int version})>[];
   final deletes = <String>[];
 
-  /// When set, list() waits for it (so a test can interleave calls).
+  /// When set, list() waits for it, so a test can interleave calls.
   Completer<void>? gate;
 
   /// When set, the next list() with a cursor fails with it.
@@ -246,7 +252,8 @@ class FakeExpenses implements ExpensesRepository {
   Future<ExpensePage> list(String groupId, {String? cursor, int limit = 20}) async {
     listCalls.add(cursor);
     final waitFor = gate;
-    final snapshot = [...all]; // what the server had when the request arrived
+    // What the server had when the request arrived.
+    final snapshot = [...all];
     if (waitFor != null) await waitFor.future;
     final error = failNextPage;
     if (cursor != null && error != null) {
@@ -255,7 +262,7 @@ class FakeExpenses implements ExpensesRepository {
     }
     // The app's default page (20) is shrunk to [pageSize] so a few expenses make several pages.
     final size = limit == 20 ? pageSize : limit;
-    final start = cursor == null ? 0 : snapshot.indexWhere((e) => e.id == cursor) + 1;
+    final start = cursor == null ? 0 : snapshot.indexWhere((expense) => expense.id == cursor) + 1;
     final items = snapshot.skip(start).take(size).toList();
     final end = start + items.length;
     return ExpensePage(items: items, nextCursor: end < snapshot.length ? items.last.id : null);
@@ -285,7 +292,7 @@ class FakeExpenses implements ExpensesRepository {
       failDelete = null;
       throw error;
     }
-    all = [...all.where((e) => e.id != expenseId)];
+    all = [...all.where((expense) => expense.id != expenseId)];
   }
 
   @override

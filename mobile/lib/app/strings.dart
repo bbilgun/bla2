@@ -1,13 +1,12 @@
-/// Every piece of text the person sees, in Mongolian.
-///
-/// Kept in one file so the wording can be reviewed and fixed in one place.
-/// Rule: no user-facing string literals anywhere else in lib/ (test/strings_test.dart checks this).
-/// Names are never given grammatical suffixes ("Батад"), because the suffix depends on the name;
-/// sentences are built so the name stands alone ("Бат: …", "Та → Бат").
-library;
+// All user-facing text, in Mongolian, so the wording can be reviewed in one place.
+// test/strings_test.dart fails if a page or controller puts a string literal on screen.
 
+/// The app's Mongolian text.
+///
+/// Names never get grammatical suffixes ("Батад"), because the right suffix depends on the name.
+/// Sentences are built so the name stands alone instead ("Бат: …", "Та → Бат").
 abstract final class S {
-  // ---------------------------------------------------------------- general
+  // General
   static const appName = 'NetZero';
   static const cancel = 'Болих';
   static const save = 'Хадгалах';
@@ -18,8 +17,12 @@ abstract final class S {
   static const somethingWentWrong = 'Алдаа гарлаа. Дахин оролдоно уу.';
   static const noConnection = 'Интернэт холболт алга. Холболтоо шалгаад дахин оролдоно уу.';
   static const sessionExpired = 'Нэвтрэх хугацаа дууссан. Дахин нэвтэрнэ үү.';
+
+  /// Shown when the server answers with something the app can't read.
   static String unexpectedResponse(int? status) => 'Серверээс тодорхойгүй хариу ирлээ ($status).';
   static const you = 'Та';
+
+  /// The signed-in user's own name, marked as "you".
   static String youSuffix(String name) => '$name (та)';
   static const formerMember = 'Хуучин гишүүн';
   static const amount = 'Дүн';
@@ -35,7 +38,7 @@ abstract final class S {
   static const fileTooLarge = 'Зураг хэт том байна. 10 МБ хүртэл зураг оруулна уу.';
   static const uploadFailed = 'Зургийг байршуулж чадсангүй. Дахин оролдоно уу.';
 
-  // Photos (image_picker errors)
+  // Photo picker errors
   static const cameraPermissionDenied =
       'Камер ашиглах зөвшөөрөл алга. Утасныхаа Тохиргоо → NetZero хэсэгт орж камерыг зөвшөөрнө үү.';
   static const photosPermissionDenied =
@@ -44,7 +47,7 @@ abstract final class S {
   static const couldNotOpenCamera = 'Камерыг нээж чадсангүй. Дахин оролдоно уу.';
   static const couldNotOpenPhoto = 'Зургийг нээж чадсангүй. Өөр зураг сонгоно уу.';
 
-  // ---------------------------------------------------------------- auth
+  // Sign in and sign up
   static const tagline = 'Хамтын зардлаа хувааж, тооцоогоо амархан хаа.';
   static const email = 'И-мэйл';
   static const password = 'Нууц үг';
@@ -63,15 +66,21 @@ abstract final class S {
   static const uppercaseLetter = 'том үсэг';
   static const aDigit = 'тоо';
 
-  /// "Нууц үгэндээ том үсэг, тоо оруулна уу"
+  /// Lists what the password is missing, for example "Нууц үгэндээ том үсэг, тоо оруулна уу".
   static String passwordNeeds(List<String> missing) => 'Нууц үгэндээ ${missing.join(', ')} оруулна уу';
   static const checkEmailTitle = 'И-мэйлээ шалгана уу';
+
+  /// Prompt on the confirm screen.
   static String enterCodeSentTo(String email) => '$email хаяг руу илгээсэн кодыг оруулна уу.';
   static const confirmationCode = 'Баталгаажуулах код';
   static const enterCode = 'И-мэйлээр ирсэн кодыг оруулна уу';
   static const confirmAndSignIn = 'Баталгаажуулаад нэвтрэх';
   static const resendCode = 'Код дахин илгээх';
+
+  /// Snackbar after sign-up sends the confirmation code.
   static String codeSent(String email) => '$email хаяг руу 6 оронтой код илгээлээ.';
+
+  /// Snackbar after a code is sent again.
   static String newCodeSent(String email) => '$email хаяг руу шинэ код илгээлээ.';
   static const codeResent = 'Илгээлээ. Ирсэн захидал болон спам хавтсаа шалгана уу.';
 
@@ -81,12 +90,16 @@ abstract final class S {
   static const resetPasswordSubtitle = 'И-мэйл хаягаа оруулбал нууц үг солих код илгээнэ.';
   static const sendCode = 'Код илгээх';
   static const newPasswordTitle = 'Шинэ нууц үг';
+
+  /// Prompt on the reset password screen.
   static String newPasswordSubtitle(String email) => '$email хаяг руу илгээсэн код болон шинэ нууц үгээ оруулна уу.';
   static const newPassword = 'Шинэ нууц үг';
   static const setPasswordAndSignIn = 'Нууц үг солиод нэвтрэх';
+
+  /// Snackbar after a password reset code is sent.
   static String resetCodeSent(String email) => '$email хаяг руу нууц үг солих код илгээлээ.';
 
-  // Cognito errors
+  // Cognito errors, see AuthController.messageFor
   static const wrongEmailOrPassword = 'И-мэйл эсвэл нууц үг буруу байна.';
   static const accountExists = 'Энэ и-мэйлээр бүртгэл аль хэдийн үүссэн байна.';
   static const passwordRules = 'Нууц үг дор хаяж 10 тэмдэгттэй, жижиг үсэг, том үсэг болон тоо агуулсан байх ёстой.';
@@ -100,7 +113,7 @@ abstract final class S {
   static const needsNewPassword = 'Энэ бүртгэлд шинэ нууц үг шаардлагатай. Админаар байнгын нууц үг тохируулуулна уу.';
   static const signInFailed = 'Нэвтрэхэд алдаа гарлаа. Дахин оролдоно уу.';
 
-  // ---------------------------------------------------------------- groups
+  // Groups list
   static const signOut = 'Гарах';
   static const account = 'Миний бүртгэл';
   static const newGroup = 'Шинэ бүлэг';
@@ -115,22 +128,28 @@ abstract final class S {
 
   // Invites to me
   static const invitesTitle = 'Урилгууд';
+
+  /// Second line of an invite card: who invited you and how big the group is.
   static String inviteMeta(String inviter, int members) => 'Урьсан: $inviter · $members гишүүн';
   static const accept = 'Нэгдэх';
   static const decline = 'Татгалзах';
   static const joinedGroup = 'Бүлэгт нэгдлээ';
   static const inviteDeclined = 'Урилгаас татгалзлаа';
 
-  // ---------------------------------------------------------------- group detail
+  // Group detail
   static const inviteByEmail = 'И-мэйлээр урих';
   static const memberEmail = 'Гишүүний и-мэйл';
   static const inviteHelper = 'Тэр хүн энэ и-мэйлээр NetZero-д бүртгүүлж нэвтэрмэгц урилгаа харна.';
   static const invite = 'Урих';
+
+  /// Snackbar after inviting someone to a group.
   static String inviteSent(String email) => 'Урилга илгээлээ: $email';
   static const pendingInvites = 'Хүлээгдэж буй урилга';
   static const cancelInvite = 'Урилга цуцлах';
   static const members = 'Гишүүд';
   static const removeMember = 'Бүлгээс хасах';
+
+  /// Confirmation before removing a member.
   static String removeMemberQuestion(String name) => 'Энэ гишүүнийг бүлгээс хасах уу? ($name)';
   static const removeBlocked = 'Энэ гишүүний тооцоо тэглэгдээгүй байна. Эхлээд тооцоогоо хаана уу.';
   static const leaveGroup = 'Бүлгээс гарах';
@@ -163,10 +182,11 @@ abstract final class S {
   static const paymentHistory = 'Төлбөрийн түүх';
 
   // Expense row
+  /// Second line of an expense row.
   static String paid(String payer, String amount) => '$payer $amount төлсөн';
   static const notInvolved = 'оролцоогүй';
 
-  // ---------------------------------------------------------------- add expense
+  // Expense form
   static const description = 'Тайлбар';
   static const descriptionHint = 'Хүнс, такси, түрээс…';
   static const paidBy = 'Төлсөн';
@@ -178,25 +198,41 @@ abstract final class S {
       'Сервер дүнг хамгийн бага нэгж хүртэл хуваана. Илүү гарсан үлдэгдэл нэг хүнд, үргэлж ижил дүрмээр оногдоно.';
   static const enterTotalFirst = 'Эхлээд нийт дүнг оруулна уу';
   static const allAssigned = 'Бүгд хуваарилагдсан';
+
+  /// Split footer when the shares add up to less than the total.
   static String leftToAssign(String amount) => '$amount үлдсэн';
+
+  /// Split footer when the shares add up to more than the total.
   static String tooMuch(String amount) => '$amount илүү байна';
   static const splitEvenly = 'Тэнцүү хуваах';
   static const percentAssigned = '100% хуваарилагдсан';
   static const whatWasItFor = 'Юунд зарцуулсан бэ?';
   static const pickSomeone = 'Дор хаяж нэг хүн сонгоно уу';
+
+  /// Validation message for one person's exact share.
   static String checkAmountFor(String name) => '$name: дүнг шалгана уу';
+
+  /// Validation message for one person's percentage.
   static String checkPercentFor(String name) => '$name: хувийг шалгана уу';
   static const enterOneShare = 'Дор хаяж нэг хүний хувийг оруулна уу';
+
+  /// Validation message when exact shares don't match the total.
   static String sharesMustAddUpTo(String amount) => 'Хуваалтын нийлбэр $amount байх ёстой';
   static const percentMustBe100 = 'Хувийн нийлбэр 100% байх ёстой';
   static const saveOffline = 'Холболт тасарлаа. "$save" товчийг дахин дарна уу. Зардал давхар бүртгэгдэхгүй.';
   static const reenterPercents = 'Хуучин хувийг хадгалдаггүй тул хувиа дахин оруулна уу.';
+
+  /// Screen reader label for one person's exact share field.
   static String exactShareFor(String name) => '$name: дүн';
+
+  /// Screen reader label for one person's percentage field.
   static String percentShareFor(String name) => '$name: хувь';
 
-  // ---------------------------------------------------------------- expense
+  // Expense detail
   static const expense = 'Зардал';
   static const expenseNotFound = 'Зардал олдсонгүй.';
+
+  /// Subtitle on the expense detail page.
   static String expenseMeta(String payer, String date, String splitLabel) =>
       '$payer төлсөн · $date · $splitLabel хуваалт';
   static const receipt = 'Баримт';
@@ -213,12 +249,16 @@ abstract final class S {
   static const expenseChangedTitle = 'Зардал өөрчлөгдсөн байна';
   static const expenseChanged =
       'Таныг засаж байх хооронд өөр хүн энэ зардлыг өөрчилсөн байна. Шинэ мэдээллийг ачааллаа, шалгаад дахин засна уу.';
+
+  /// Who last edited an expense, and when.
   static String editedBy(String name, String date) => 'Зассан: $name · $date';
 
-  // ---------------------------------------------------------------- settle up
+  // Settle up
   static const everyoneSettled = 'Бүх хүний тооцоо тэнцүү байна.';
   static const settleUpHint =
       'Хүн бүрийн тооцоог тэглэх хамгийн цөөн төлбөрүүд. Мөнгө бодитоор шилжсэний дараа төлбөрөө бүртгээрэй.';
+
+  /// One suggested payment, "from → to".
   static String transfer(String from, String to) => '$from → $to';
   static const record = 'Бүртгэх';
   static const recordedPayments = 'Бүртгэсэн төлбөрүүд';
@@ -226,17 +266,19 @@ abstract final class S {
   static const recordPayment = 'Төлбөр бүртгэх';
   static const notRecorded = 'Бүртгэгдсэнгүй';
   static const paymentRecorded = 'Төлбөр бүртгэгдлээ';
+
+  /// One recorded payment in the history list.
   static String paymentFrom(String name, String amount) => '$name: $amount';
   static const recordOffline = 'Холболт тасарлаа. Дахин оролдоно уу. Төлбөр давхар бүртгэгдэхгүй.';
   static const deletePayment = 'Төлбөр устгах';
   static const deletePaymentQuestion = 'Энэ бүртгэсэн төлбөрийг устгах уу? Хүн бүрийн тооцоо шинэчлэгдэнэ.';
   static const paymentDeleted = 'Төлбөр устлаа';
 
-  // ---------------------------------------------------------------- home tabs
+  // Home tabs
   static const tabGroups = 'Бүлгүүд';
   static const tabBills = 'Тооцоо';
 
-  // ---------------------------------------------------------------- bills (QR bill splitting)
+  // Bills (QR bill splitting)
   static const billsTitle = 'Тооцоо хуваах';
   static const newBill = 'Шинэ тооцоо';
   static const editBill = 'Тооцоо засах';
@@ -252,6 +294,8 @@ abstract final class S {
   static const price = 'Үнэ';
   static const addItem = 'Мөр нэмэх';
   static const remove = 'Устгах';
+
+  /// Total under the bill editor's item list.
   static String itemsTotal(String amount) => 'Нийт: $amount';
   static const whereToPay = 'Хаана шилжүүлэх вэ?';
   static const whereToPayHint = 'Зочид энэ мэдээллийг харж, танд шилжүүлнэ. Дараагийн тооцоонд автоматаар бөглөгдөнө.';
@@ -264,9 +308,13 @@ abstract final class S {
   static const replaceQr = 'Солих';
   static const billTitleRequired = 'Гарчгаа оруулна уу';
   static const needOneItem = 'Дор хаяж нэг зүйл оруулна уу';
+
+  /// Validation message for a bill item row, counted from 1.
   static String itemRowIncomplete(int row) => '$row-р мөр: нэр болон үнээ зөв оруулна уу';
   static const paymentIncomplete = 'Банк, дансны дугаар, эзэмшигчийн нэрээ бүгдийг нь оруулна уу';
   static const createBillAndQr = 'Үүсгээд QR гаргах';
+
+  /// Banks offered in the bill editor's payment details.
   static const banks = [
     'Хаан банк',
     'Голомт банк',
@@ -287,10 +335,14 @@ abstract final class S {
   static const shareLink = 'Илгээх';
   static const copyLink = 'Хуулах';
   static const linkCopied = 'Холбоос хуулагдлаа';
+
+  /// Text sent with the bill link through the share sheet.
   static String shareText(String title, String url) => '$title: идсэн зүйлээ сонгоод төлөх дүнгээ хараарай $url';
   static const total = 'Нийт';
   static const unclaimed = 'Хэн ч сонгоогүй';
   static const collected = 'Цугларсан';
+
+  /// How much of the bill guests have paid so far.
   static String collectedOf(String paid, String owed) => '$paid / $owed';
   static const myItems = 'Миний идсэн';
   static const myItemsHint = 'Өөрийн идсэн зүйлсээ сонгоно уу. Хамт идсэн зүйл таны болон зочдын дунд хуваагдана.';
@@ -299,6 +351,8 @@ abstract final class S {
   static const paidBadge = 'Төлсөн';
   static const markPaid = 'Төлсөн гэж тэмдэглэх';
   static const markUnpaid = 'Төлөөгүй болгох';
+
+  /// Confirmation before removing a guest from a bill.
   static String removeGuestQuestion(String name) => 'Энэ зочныг хасах уу? ($name)';
   static const nobodyClaimed = 'Хэн ч сонгоогүй';
   static const billOpen = 'Нээлттэй';
@@ -306,10 +360,20 @@ abstract final class S {
   static const closeBill = 'Тооцоог хаах';
   static const reopenBill = 'Дахин нээх';
   static const closedBanner = 'Тооцоо хаагдсан. Зочид сонголтоо өөрчлөх боломжгүй, гэхдээ төлбөрөө тэмдэглэж болно.';
+
+  /// How many guests have paid, on a bill card.
   static String paidOf(int paid, int count) => '$paid/$count төлсөн';
+
+  /// What guests should write as the bank transfer reference.
   static String transferNote(String code) => 'Гүйлгээний утга: $code + нэр';
+
+  /// What a guest has paid.
   static String paidShort(String amount) => 'Төлсөн: $amount';
+
+  /// What a guest still owes.
   static String stillOwes(String amount) => 'Дутуу: $amount';
+
+  /// How much a guest overpaid.
   static String paidTooMuch(String amount) => 'Илүү төлсөн: $amount';
   static const deleteBill = 'Тооцоо устгах';
   static const deleteBillQuestion = 'Энэ тооцоог устгах уу? QR холбоос ажиллахаа болино. Буцаах боломжгүй.';
@@ -321,29 +385,32 @@ abstract final class S {
   static const newLinkCreated = 'Шинэ холбоос үүслээ';
   static const reopenToEdit = 'Тооцоо хаагдсан байна. Засварыг хадгалахын тулд эхлээд "$reopenBill" дарна уу.';
 
-  // ---------------------------------------------------------------- account
+  // Account
   static const accountTitle = 'Миний бүртгэл';
   static const deleteAccount = 'Бүртгэл устгах';
   static const deleteAccountQuestion = 'Бүртгэлээ устгах уу?';
   static const deleteAccountWarning =
       'Таныг бүх бүлгээс гаргаж, таны үүсгэсэн тооцоонууд болон бүртгэлийг бүрмөсөн устгана. Буцаах боломжгүй.';
+
+  /// Why the account can't be deleted yet, listing the unsettled groups.
   static String deleteAccountBlocked(List<String> groups) =>
       'Дараах бүлгүүдэд таны тооцоо тэглэгдээгүй байна: ${groups.join(', ')}. Эхлээд тооцоогоо хаана уу.';
   static const accountDeleted = 'Бүртгэл устлаа';
   static const emailNotVerified = 'И-мэйл хаяг тань баталгаажаагүй тул бүлгийн урилга танд ирэхгүй.';
 
-  // ---------------------------------------------------------------- dates
-  /// "11-р сарын 5"
-  static String date(DateTime d) {
-    final local = d.toLocal();
+  // Dates
+  /// Month and day in local time, for example "11-р сарын 5".
+  static String date(DateTime time) {
+    final local = time.toLocal();
     return '${local.month}-р сарын ${local.day}';
   }
 
-  /// "11-р сар", for the small calendar chip on expense rows.
-  static String month(DateTime d) => '${d.toLocal().month}-р сар';
+  /// Month in local time, for example "11-р сар". Used on the calendar chip of expense rows.
+  static String month(DateTime time) => '${time.toLocal().month}-р сар';
 
-  // ---------------------------------------------------------------- server errors
-  /// The server's error codes (backend/src) in Mongolian. Unknown codes get a generic message.
+  // Server errors
+  /// The message for an API error code. `NETWORK` comes from the app itself, the rest from the backend.
+  /// Codes the app doesn't know get a generic message.
   static String apiError(String code) => switch (code) {
     'NETWORK' => noConnection,
     'UNAUTHORIZED' => sessionExpired,
@@ -382,7 +449,8 @@ abstract final class S {
     _ => somethingWentWrong,
   };
 
-  /// Server validation errors, by field path. The server's own wording is English, so it isn't shown.
+  /// The message for a server validation error on the field at [path]. The server's own message is
+  /// English, so we show ours.
   static String fieldError(String path) => switch (path) {
     'email' => enterValidEmail,
     'name' => 'Нэрээ шалгана уу',

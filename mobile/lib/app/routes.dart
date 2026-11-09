@@ -1,3 +1,4 @@
+// Route names and the page table. Each route's binding creates the controller its page needs.
 import 'package:flutter/widgets.dart';
 import 'package:get/get.dart';
 
@@ -22,6 +23,7 @@ import '../pages/group_detail_page.dart';
 import '../pages/home_page.dart';
 import '../pages/settle_up_page.dart';
 
+/// Route names, and helpers that fill in their path parameters.
 abstract final class Routes {
   static const signIn = '/sign-in';
   static const signUp = '/sign-up';
@@ -39,29 +41,44 @@ abstract final class Routes {
   static const bill = '/bills/:billId';
   static const editBill = '/bills/:billId/edit';
 
+  /// The group page.
   static String groupPath(String id) => '/groups/$id';
+
+  /// The add expense form for a group.
   static String addExpensePath(String id) => '/groups/$id/add-expense';
+
+  /// One expense in a group.
   static String expensePath(String groupId, String expenseId) => '/groups/$groupId/expenses/$expenseId';
+
+  /// The edit form for one expense.
   static String editExpensePath(String groupId, String expenseId) => '/groups/$groupId/expenses/$expenseId/edit';
+
+  /// The settle up page for a group.
   static String settleUpPath(String id) => '/groups/$id/settle-up';
+
+  /// The bill page.
   static String billPath(String id) => '/bills/$id';
+
+  /// The bill editor for an existing bill.
   static String editBillPath(String id) => '/bills/$id/edit';
 }
 
-/// Tells pages when another page covers them (bill polling pauses, the groups list refreshes on return).
+/// Tells pages when another page covers them or is popped off them. The groups list uses it to
+/// refresh on return, and the bill page to pause polling while it is hidden.
 final routeObserver = RouteObserver<PageRoute<dynamic>>();
 
-Bindings _auth() => BindingsBuilder<void>(() => Get.lazyPut(() => AuthController(Get.find())));
+Bindings _authBinding() => BindingsBuilder<void>(() => Get.lazyPut(() => AuthController(Get.find())));
 
-/// Bindings are the dependency injection: each page gets its controller when it opens,
-/// and GetX disposes the controller when the page is popped.
+/// Every page in the app. A binding creates the page's controller when the route opens, and GetX
+/// disposes it when the route is popped. Pages nested under a group or bill reuse that screen's
+/// controller, which is still alive underneath them.
 final pages = <GetPage<dynamic>>[
-  GetPage(name: Routes.signIn, page: () => const SignInPage(), binding: _auth()),
-  GetPage(name: Routes.signUp, page: () => const SignUpPage(), binding: _auth()),
-  GetPage(name: Routes.confirm, page: () => const ConfirmPage(), binding: _auth()),
-  GetPage(name: Routes.forgotPassword, page: () => const ForgotPasswordPage(), binding: _auth()),
-  GetPage(name: Routes.resetPassword, page: () => const ResetPasswordPage(), binding: _auth()),
-  // Home: the groups tab and the bills tab.
+  GetPage(name: Routes.signIn, page: () => const SignInPage(), binding: _authBinding()),
+  GetPage(name: Routes.signUp, page: () => const SignUpPage(), binding: _authBinding()),
+  GetPage(name: Routes.confirm, page: () => const ConfirmPage(), binding: _authBinding()),
+  GetPage(name: Routes.forgotPassword, page: () => const ForgotPasswordPage(), binding: _authBinding()),
+  GetPage(name: Routes.resetPassword, page: () => const ResetPasswordPage(), binding: _authBinding()),
+  // Home has two tabs, so it binds the groups and bills controllers, plus the invites shown on the groups tab.
   GetPage(
     name: Routes.groups,
     page: () => const HomePage(),

@@ -1,9 +1,10 @@
+// Brand colors and the NetZero logo, drawn in code so it stays sharp at any size and can be
+// rendered to the app icon files by tool/brand_assets_test.dart.
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
-/// NetZero's brand: one bold color, a rounded-square mark with a white geometric symbol cut out of it,
-/// heavy type. (Design language inspired by mezorn.com; the symbol and colors are NetZero's own.)
+/// NetZero's brand colors: one bold emerald, near-black ink and a red kept for debts.
 abstract final class Brand {
   /// Vivid emerald. White text on it passes WCAG AA (4.5:1).
   static const emerald = Color(0xFF00885A);
@@ -14,14 +15,13 @@ abstract final class Brand {
   /// Near-black with a hint of green, for text and the "settled" state.
   static const ink = Color(0xFF0E1512);
 
-  /// Accent for "you owe". Kept apart from the brand color on purpose: in a money app the brand
-  /// must never read as debt.
+  /// Accent for "you owe". It is deliberately far from the brand color, so the brand never reads as debt.
   static const red = Color(0xFFE5383B);
 }
 
 /// How the mark's background is drawn.
 enum MarkShape {
-  /// Rounded square (superellipse), the in-app logo.
+  /// A rounded superellipse square, the in-app logo.
   squircle,
 
   /// Edge-to-edge square: iOS masks app icons itself.
@@ -31,8 +31,7 @@ enum MarkShape {
   none,
 }
 
-/// The NetZero mark: a zero split along its diagonal into two halves, nudged apart.
-/// "Split it, get back to zero."
+/// Paints the NetZero mark: a zero cut along its diagonal into two halves that are nudged apart.
 class NetZeroMarkPainter extends CustomPainter {
   const NetZeroMarkPainter({
     this.background = Brand.emerald,
@@ -41,63 +40,74 @@ class NetZeroMarkPainter extends CustomPainter {
     this.glyphScale = 1,
   });
 
+  /// Fill behind the symbol.
   final Color background;
+
+  /// Color of the symbol itself.
   final Color foreground;
+
+  /// How the background is drawn.
   final MarkShape shape;
 
-  /// Shrinks the symbol inside the canvas (Android's adaptive icon crops to its centre 66%).
+  /// Shrinks the symbol inside the canvas. Android's adaptive icon crops to its centre 66%.
   final double glyphScale;
 
-  // Geometry as fractions of the mark's size, shared with the SVG in the guest web page.
-  /// The zero is an upright oval (a digit, not a letter O): outer half-width and half-height, and ring thickness.
+  // The geometry below is in fractions of the mark's size and matches the SVG on the guest web page.
+
+  /// Outer half-width of the zero. It is an upright oval, so it reads as a digit and not a letter O.
   static const outerRx = 0.25;
+
+  /// Outer half-height of the zero.
   static const outerRy = 0.31;
+
+  /// Thickness of the zero's ring.
   static const thickness = 0.13;
 
-  /// The cut: a straight diagonal slash ("/") through the middle, this wide…
+  /// Width of the diagonal cut through the middle.
   static const cutWidth = 0.055;
 
-  /// …and each half slides this far along the cut, in opposite directions.
+  /// How far each half slides along the cut, in opposite directions.
   static const slide = 0.035;
 
   @override
   void paint(Canvas canvas, Size size) {
-    final s = size.shortestSide;
-    final rect = Offset.zero & Size.square(s);
+    final extent = size.shortestSide;
+    final rect = Offset.zero & Size.square(extent);
     final fill = Paint()..color = background;
     switch (shape) {
       case MarkShape.squircle:
-        canvas.drawRSuperellipse(RSuperellipse.fromRectAndRadius(rect, Radius.circular(s * 0.3)), fill);
+        canvas.drawRSuperellipse(RSuperellipse.fromRectAndRadius(rect, Radius.circular(extent * 0.3)), fill);
       case MarkShape.fullBleed:
         canvas.drawRect(rect, fill);
       case MarkShape.none:
         break;
     }
 
-    final g = s * glyphScale;
+    final glyph = extent * glyphScale;
     final ring = Path()
       ..fillType = PathFillType.evenOdd
-      ..addOval(Rect.fromCenter(center: Offset.zero, width: g * outerRx * 2, height: g * outerRy * 2))
+      ..addOval(Rect.fromCenter(center: Offset.zero, width: glyph * outerRx * 2, height: glyph * outerRy * 2))
       ..addOval(
         Rect.fromCenter(
           center: Offset.zero,
-          width: g * (outerRx - thickness) * 2,
-          height: g * (outerRy - thickness) * 2,
+          width: glyph * (outerRx - thickness) * 2,
+          height: glyph * (outerRy - thickness) * 2,
         ),
       );
     final paint = Paint()..color = foreground;
-    final far = s * 2;
-    final cut = g * cutWidth / 2;
+    final far = extent * 2;
+    final halfCut = glyph * cutWidth / 2;
 
-    // Work in a frame where the cut runs along x: rotate -45° so "/" becomes horizontal.
-    // Each half is clipped to its side of the cut, slid along it, then drawn upright again.
+    // Rotate by -45 degrees so the "/" cut runs along the x axis. Each half is clipped to its side of
+    // the cut, slid along it, then rotated back upright.
     for (final side in const [-1.0, 1.0]) {
+      final halfPlane = side < 0 ? Rect.fromLTRB(-far, -far, far, -halfCut) : Rect.fromLTRB(-far, halfCut, far, far);
       canvas
         ..save()
         ..translate(rect.center.dx, rect.center.dy)
         ..rotate(-math.pi / 4)
-        ..translate(side * g * slide, 0)
-        ..clipRect(side < 0 ? Rect.fromLTRB(-far, -far, far, -cut) : Rect.fromLTRB(-far, cut, far, far))
+        ..translate(side * glyph * slide, 0)
+        ..clipRect(halfPlane)
         ..rotate(math.pi / 4)
         ..drawPath(ring, paint)
         ..restore();
@@ -112,9 +122,11 @@ class NetZeroMarkPainter extends CustomPainter {
       old.glyphScale != glyphScale;
 }
 
+/// The mark on its own, in brand colors that follow the light or dark theme.
 class NetZeroMark extends StatelessWidget {
   const NetZeroMark({super.key, this.size = 40});
 
+  /// Width and height in logical pixels.
   final double size;
 
   @override
@@ -130,10 +142,11 @@ class NetZeroMark extends StatelessWidget {
   }
 }
 
-/// Mark + wordmark, for the app bar and the sign-in screen.
+/// The mark followed by the "NetZero" wordmark, for the app bar and the sign-in screen.
 class NetZeroLogo extends StatelessWidget {
   const NetZeroLogo({super.key, this.size = 28});
 
+  /// Height of the mark. The wordmark scales with it.
   final double size;
 
   @override

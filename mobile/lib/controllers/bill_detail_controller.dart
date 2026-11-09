@@ -1,3 +1,4 @@
+// The bill page: the QR code, guests and their items, kept live by polling.
 import 'dart:async';
 
 import 'package:flutter/services.dart';
@@ -10,30 +11,52 @@ import '../models/models.dart';
 import '../repositories/repositories.dart';
 import '../services/api_client.dart';
 
-/// One bill, live: guests tick lines from their browsers, so the host's screen polls while it's open
-/// and visible. Polling pauses while the app is in the background or another page covers this one.
+/// One bill, kept live. Guests claim items from their browsers, so the host's screen polls while
+/// it's open. Polling pauses while the app is in the background or another page covers this one.
 class BillDetailController extends GetxController with WidgetsBindingObserver {
+  /// [pollEvery] lets tests poll faster.
   BillDetailController(this.billId, this._bills, {this.pollEvery = const Duration(seconds: 5)});
 
   final String billId;
   final BillsRepository _bills;
+
+  /// Time between polls.
   final Duration pollEvery;
 
+  /// The bill as last loaded or saved.
   final bill = Rxn<Bill>();
+
+  /// True until the first load finishes, and again while "try again" reloads.
   final loading = true.obs;
+
+  /// Why the bill couldn't load.
   final error = RxnString();
 
-  /// Writes in flight, by guest id ("host" for the host's own ticks). Polling pauses while any run.
+  /// Writes in flight, keyed by guest id, or by 'status', 'token' or 'delete' for bill-wide actions.
+  /// Polling skips its turn while any are running.
   final busy = <String>{}.obs;
+
+  /// The host's own ticks while a change is on its way to the server. Null when nothing is pending.
+  final pendingMine = Rxn<Set<String>>();
+
   Timer? _timer;
 
-  /// Counts every write. A poll that started before a write answers with the bill as it was before
-  /// it, so its answer is dropped instead of overwriting the write's result.
+  // Counts every write. A poll that started before a write answers with the bill as it was before it,
+  // so that answer is dropped instead of overwriting the write's result.
   int _writes = 0;
 
-  /// Why polling is paused: 'background' (app not visible), 'covered' (another page on top).
+  // Why polling is paused: 'background' when the app isn't visible, 'covered' when a page is on top.
   final _pauses = <String>{};
+
+  // Ticks waiting to be sent after the request in flight, and whether one is in flight.
+  Set<String>? _queuedMine;
+  bool _sendingMine = false;
+
+  /// Whether the poll timer is running.
   bool get isPolling => _timer != null;
+
+  /// The items the host has ticked, including changes not yet confirmed by the server.
+  Set<String> get myItemIds => pendingMine.value ?? bill.value?.host.itemIds.toSet() ?? const {};
 
   @override
   void onInit() {
@@ -58,21 +81,30 @@ class BillDetailController extends GetxController with WidgetsBindingObserver {
       case AppLifecycleState.paused || AppLifecycleState.hidden || AppLifecycleState.detached:
         pausePolling('background');
       case AppLifecycleState.inactive:
-        break; // brief (control centre, a system dialog): keep going
+        // Brief, as when control centre or a system dialog is showing, so keep going.
+        break;
     }
   }
 
-  /// The page tells us when another page is pushed on top of it, and when it's back.
-  void setCovered(bool covered) => covered ? pausePolling('covered') : resumePolling('covered');
+  /// Called by the page when another page is pushed on top of it, and when it's uncovered again.
+  void setCovered(bool covered) {
+    if (covered) {
+      pausePolling('covered');
+    } else {
+      resumePolling('covered');
+    }
+  }
 
+  /// Stops polling until [resumePolling] is called with the same [reason].
   void pausePolling(String reason) {
     _pauses.add(reason);
     _stopPolling();
   }
 
-  /// Picks up at once with a fresh poll, then on the usual schedule.
+  /// Lifts one pause. Once none are left, polls straight away and then on the usual schedule.
   void resumePolling(String reason) {
-    if (!_pauses.remove(reason) || _pauses.isNotEmpty || isClosed) return;
+    final wasPaused = _pauses.remove(reason);
+    if (!wasPaused || _pauses.isNotEmpty || isClosed) return;
     unawaited(poll());
     _startPolling();
   }
@@ -87,6 +119,7 @@ class BillDetailController extends GetxController with WidgetsBindingObserver {
     _timer = null;
   }
 
+  /// Loads the bill.
   Future<void> load() async {
     error.value = null;
     final writes = _writes;
@@ -100,12 +133,14 @@ class BillDetailController extends GetxController with WidgetsBindingObserver {
     }
   }
 
-  /// "Try again": show the skeleton while it loads.
+  /// "Try again" on the error page. It shows the loading skeleton while it loads.
   Future<void> retry() {
     loading.value = true;
     return load();
   }
 
+  /// Fetches the bill in the background. Skipped while a write is running, and the answer is dropped
+  /// if a write started meanwhile or it is older than what's on screen.
   @visibleForTesting
   Future<void> poll() async {
     if (busy.isNotEmpty || loading.value) return;
@@ -114,30 +149,29 @@ class BillDetailController extends GetxController with WidgetsBindingObserver {
       final fresh = await _bills.get(billId);
       if (busy.isEmpty && writes == _writes && !_isOlder(fresh)) bill.value = fresh;
     } on ApiException {
-      // Next tick tries again; a failed background refresh shouldn't interrupt the host.
+      // The next tick tries again. A failed background refresh shouldn't interrupt the host.
     }
   }
 
   bool _isOlder(Bill fresh) {
     final shown = bill.value?.updatedAt;
-    final got = fresh.updatedAt;
-    return shown != null && got != null && got.isBefore(shown);
+    final received = fresh.updatedAt;
+    return shown != null && received != null && received.isBefore(shown);
   }
 
-  /// The host's ticks as shown: changes appear at once, before the server answers.
-  final pendingMine = Rxn<Set<String>>();
-  Set<String> get myItemIds => pendingMine.value ?? bill.value?.host.itemIds.toSet() ?? const {};
-  Set<String>? _queuedMine;
-  bool _sendingMine = false;
-
-  /// The host's own lines: ticking them shares those lines with guests who ticked them too.
-  /// Optimistic: the tick shows immediately; taps made while a request is in flight are merged into
-  /// one follow-up request with the latest full list (lists, not toggles, so nothing flips back).
-  /// If the request fails, the ticks go back to what the server last said.
+  /// Ticks or unticks one of the host's own items, which shares it with any guests who ticked it too.
+  ///
+  /// The tick shows at once. Taps made while a request is in flight are merged into one follow-up
+  /// request carrying the latest full list. If a request fails, the ticks go back to what the server
+  /// last said.
   Future<void> toggleMine(String itemId) async {
     if (bill.value == null) return;
     final next = {...myItemIds};
-    next.contains(itemId) ? next.remove(itemId) : next.add(itemId);
+    if (next.contains(itemId)) {
+      next.remove(itemId);
+    } else {
+      next.add(itemId);
+    }
     pendingMine.value = next;
     _queuedMine = next;
     if (_sendingMine) return;
@@ -146,10 +180,10 @@ class BillDetailController extends GetxController with WidgetsBindingObserver {
     busy.add(Bill.hostGuestId);
     try {
       while (_queuedMine != null) {
-        final ids = _queuedMine!;
+        final itemIds = _queuedMine!;
         _queuedMine = null;
         _writes++;
-        bill.value = await _bills.updateGuest(billId, Bill.hostGuestId, itemIds: ids.toList());
+        bill.value = await _bills.updateGuest(billId, Bill.hostGuestId, itemIds: itemIds.toList());
       }
     } on ApiException catch (e) {
       _queuedMine = null;
@@ -161,22 +195,25 @@ class BillDetailController extends GetxController with WidgetsBindingObserver {
     }
   }
 
-  /// Marking paid records the total the host sees right now as the amount paid.
-  Future<void> setPaid(BillGuest guest, bool paid) => _write(
-    guest.id,
-    () => _bills.updateGuest(billId, guest.id, paid: paid, paidCents: paid ? guest.totalCents : null),
-  );
-
-  Future<void> removeGuest(String guestId) => _write(guestId, () => _bills.removeGuest(billId, guestId));
-
-  Future<void> setOpen(bool open) => _write('status', () => _bills.setOpen(billId, open));
-
-  /// A new link and QR code; the old ones stop working.
-  Future<void> rotateLink() async {
-    if (await _write('token', () => _bills.rotateToken(billId))) notify(S.newLinkCreated);
+  /// Marks a guest paid or unpaid. Marking paid records the total the host sees right now as the amount.
+  Future<void> setPaid(BillGuest guest, bool paid) {
+    final paidCents = paid ? guest.totalCents : null;
+    return _write(guest.id, () => _bills.updateGuest(billId, guest.id, paid: paid, paidCents: paidCents));
   }
 
-  /// Returns true once it's deleted (the page then closes).
+  /// Removes a guest from the bill.
+  Future<void> removeGuest(String guestId) => _write(guestId, () => _bills.removeGuest(billId, guestId));
+
+  /// Opens or closes the bill to changes from guests.
+  Future<void> setOpen(bool open) => _write('status', () => _bills.setOpen(billId, open));
+
+  /// Replaces the link and QR code. The old ones stop working.
+  Future<void> rotateLink() async {
+    final rotated = await _write('token', () => _bills.rotateToken(billId));
+    if (rotated) notify(S.newLinkCreated);
+  }
+
+  /// Deletes the bill. Returns true once it's gone, and the page then closes.
   Future<bool> delete() async {
     if (!busy.add('delete')) return false;
     _writes++;
@@ -186,7 +223,8 @@ class BillDetailController extends GetxController with WidgetsBindingObserver {
       notify(S.billDeleted);
       return true;
     } on ApiException catch (e) {
-      if (e.code == 'BILL_NOT_FOUND') return true; // already gone
+      // Already gone is what we wanted.
+      if (e.code == 'BILL_NOT_FOUND') return true;
       notify(S.somethingWentWrong, e.message);
       _startPolling();
       return false;
@@ -195,12 +233,13 @@ class BillDetailController extends GetxController with WidgetsBindingObserver {
     }
   }
 
-  /// After editing: the editor returns the saved bill.
+  /// Shows the bill the editor saved.
   void replace(Bill updated) {
     _writes++;
     bill.value = updated;
   }
 
+  /// Copies the guest link to the clipboard.
   Future<void> copyLink() async {
     final url = bill.value?.url;
     if (url == null) return;
@@ -208,8 +247,10 @@ class BillDetailController extends GetxController with WidgetsBindingObserver {
     notify(S.linkCopied, url);
   }
 
+  /// Whether a write for [guestId] is running.
   bool isBusy(String guestId) => busy.contains(guestId);
 
+  // Runs one write that returns the updated bill. Returns whether it succeeded.
   Future<bool> _write(String key, Future<Bill> Function() request) async {
     if (busy.contains(key)) return false;
     busy.add(key);

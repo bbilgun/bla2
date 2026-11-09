@@ -1,3 +1,4 @@
+// InvitesController: accepting and declining invites addressed to the user.
 import 'package:flutter_test/flutter_test.dart';
 import 'package:get/get.dart';
 import 'package:netzero/app/strings.dart';
@@ -17,6 +18,7 @@ PendingInvite inviteTo(String groupId) => PendingInvite(
   createdAt: DateTime.utc(2026, 11, 9),
 );
 
+/// Two pending invites. The next accept or decline can be made to fail with [failWith].
 class FakeInvites implements InvitesRepository {
   List<PendingInvite> pending = [inviteTo('g1'), inviteTo('g2')];
   final calls = <String>[];
@@ -37,7 +39,7 @@ class FakeInvites implements InvitesRepository {
   Future<Group> accept(PendingInvite invite) async {
     calls.add('accept ${invite.id}');
     await _maybeFail();
-    pending = [...pending.where((i) => i.id != invite.id)];
+    pending = [...pending.where((other) => other.id != invite.id)];
     return groupOf(id: invite.groupId, name: invite.groupName);
   }
 
@@ -45,7 +47,7 @@ class FakeInvites implements InvitesRepository {
   Future<void> decline(PendingInvite invite) async {
     calls.add('decline ${invite.id}');
     await _maybeFail();
-    pending = [...pending.where((i) => i.id != invite.id)];
+    pending = [...pending.where((other) => other.id != invite.id)];
   }
 }
 
@@ -53,52 +55,64 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   late FakeInvites repo;
-  late InvitesController c;
+  late InvitesController controller;
+
+  List<String> groupIds() => controller.invites.map((invite) => invite.groupId).toList();
 
   setUp(() async {
     Get.testMode = true;
     recordNotifications();
     repo = FakeInvites();
-    c = InvitesController(repo);
-    await c.load();
+    controller = InvitesController(repo);
+    await controller.load();
   });
 
-  test('loads my invites', () {
-    expect(c.invites.map((i) => i.groupId), ['g1', 'g2']);
+  test('loads the pending invites', () {
+    expect(groupIds(), ['g1', 'g2']);
   });
 
-  test('accept: returns the group I joined and removes the invite', () async {
-    final group = await c.accept(c.invites.first);
+  test('accepting returns the group and removes the invite', () async {
+    final group = await controller.accept(controller.invites.first);
+
     expect(group?.id, 'g1');
-    expect(c.invites.map((i) => i.groupId), ['g2']);
+    expect(groupIds(), ['g2']);
     expect(shown.single, '${S.joinedGroup}: Group g1');
   });
 
-  test('accept that fails offline keeps the invite to try again', () async {
+  test('an accept that fails offline keeps the invite', () async {
     repo.failWith = networkError();
-    expect(await c.accept(c.invites.first), isNull);
-    expect(c.invites, hasLength(2));
-    expect(c.isBusy(c.invites.first), isFalse);
+
+    final group = await controller.accept(controller.invites.first);
+
+    expect(group, isNull);
+    expect(controller.invites, hasLength(2));
+    expect(controller.isBusy(controller.invites.first), isFalse);
   });
 
-  test('INVITE_NOT_FOUND (cancelled, or our earlier accept went through) drops it', () async {
+  test('an invite that is gone on the server is dropped', () async {
     repo.failWith = apiError('INVITE_NOT_FOUND', status: 404);
-    expect(await c.accept(c.invites.first), isNull);
-    expect(c.invites.map((i) => i.groupId), ['g2']);
+
+    final group = await controller.accept(controller.invites.first);
+
+    expect(group, isNull);
+    expect(groupIds(), ['g2']);
   });
 
   test('a double tap sends one request', () async {
-    final invite = c.invites.first;
-    await Future.wait([c.accept(invite), c.accept(invite)]);
+    final invite = controller.invites.first;
+
+    await Future.wait([controller.accept(invite), controller.accept(invite)]);
+
     expect(repo.calls, ['accept inv-g1']);
   });
 
-  test('decline removes it; GROUP_FULL on accept is explained', () async {
-    expect(await c.decline(c.invites.last), isTrue);
-    expect(c.invites.map((i) => i.groupId), ['g1']);
+  test('declining removes the invite, and a full group is explained', () async {
+    expect(await controller.decline(controller.invites.last), isTrue);
+    expect(groupIds(), ['g1']);
 
     repo.failWith = apiError('GROUP_FULL');
-    expect(await c.accept(c.invites.first), isNull);
+
+    expect(await controller.accept(controller.invites.first), isNull);
     expect(shown.last, contains('GROUP_FULL'));
   });
 }

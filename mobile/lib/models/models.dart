@@ -1,28 +1,31 @@
-/// Hand-written fromJson so nothing is hidden: every amount arrives as an `int` of cents,
-/// and `as int` throws if the server ever sent a float.
-library;
-
+// The API's JSON shapes as Dart classes, parsed by hand. Amounts are ints of minor units, and the
+// `as int` casts throw if the server ever sends a float.
 import '../app/strings.dart';
 
 DateTime? _date(Object? value) => value == null ? null : DateTime.parse(value as String);
 
-List<T> _list<T>(Object? json, T Function(Map<String, dynamic>) item) => [
-  for (final x in (json as List<dynamic>? ?? const [])) item(x as Map<String, dynamic>),
+List<T> _list<T>(Object? json, T Function(Map<String, dynamic>) parseItem) => [
+  for (final entry in (json as List<dynamic>? ?? const [])) parseItem(entry as Map<String, dynamic>),
 ];
 
-/// One page of a newest-first list. Pass [nextCursor] back to get the next page; null means the end.
+/// One page of a newest-first list.
 class CursorPage<T> {
   const CursorPage({required this.items, required this.nextCursor});
 
+  /// The items on this page, newest first.
   final List<T> items;
+
+  /// Pass this back to get the next page. Null on the last page.
   final String? nextCursor;
 
   factory CursorPage.fromJson(Map<String, dynamic> json, T Function(Map<String, dynamic>) item) =>
       CursorPage(items: _list(json['items'], item), nextCursor: json['nextCursor'] as String?);
 }
 
+/// A page of a group's expenses.
 typedef ExpensePage = CursorPage<Expense>;
 
+/// The signed-in user's own profile, from `GET /me`.
 class Me {
   const Me({
     required this.userId,
@@ -33,17 +36,18 @@ class Me {
     this.payQrUrl,
   });
 
+  /// The Cognito `sub`.
   final String userId;
   final String email;
   final String name;
 
-  /// Invites reach only a verified email address.
+  /// Whether the email is verified. Group invites only reach verified addresses.
   final bool emailVerified;
 
   /// Bank details from the last bill, to pre-fill the next one.
   final PaymentInfo? payment;
 
-  /// Presigned view URL of the bank QR screenshot, if one was uploaded.
+  /// Short-lived download URL of the bank QR screenshot, if one was uploaded.
   final String? payQrUrl;
 
   factory Me.fromJson(Map<String, dynamic> json) => Me(
@@ -56,6 +60,7 @@ class Me {
   );
 }
 
+/// A member of a group.
 class Member {
   const Member({required this.userId, required this.email, required this.name});
 
@@ -67,12 +72,14 @@ class Member {
       Member(userId: json['userId'] as String, email: json['email'] as String, name: json['name'] as String);
 }
 
-/// Someone invited to a group by email who hasn't accepted yet (the group's view).
+/// An invite the group has sent that hasn't been accepted yet, as the group's members see it.
 class GroupInvite {
   const GroupInvite({required this.id, required this.email, required this.invitedBy, required this.createdAt});
 
   final String id;
   final String email;
+
+  /// User id of the member who sent it.
   final String invitedBy;
   final DateTime createdAt;
 
@@ -84,6 +91,7 @@ class GroupInvite {
   );
 }
 
+/// A group of people sharing expenses in one currency.
 class Group {
   const Group({
     required this.id,
@@ -96,8 +104,12 @@ class Group {
 
   final String id;
   final String name;
+
+  /// ISO code. Every amount in the group is in this currency.
   final String currency;
   final List<Member> members;
+
+  /// Invites not yet accepted.
   final List<GroupInvite> invites;
   final DateTime createdAt;
 
@@ -110,17 +122,19 @@ class Group {
     createdAt: DateTime.parse(json['createdAt'] as String),
   );
 
+  /// The member's name, or "former member" for someone who has left but still appears on old expenses.
   String nameOf(String userId) {
-    for (final m in members) {
-      if (m.userId == userId) return m.name;
+    for (final member in members) {
+      if (member.userId == userId) return member.name;
     }
     return S.formerMember;
   }
 
-  bool isMember(String userId) => members.any((m) => m.userId == userId);
+  /// Whether [userId] is currently in the group.
+  bool isMember(String userId) => members.any((member) => member.userId == userId);
 }
 
-/// An invite to me (GET /invites), shown on the groups page to accept or decline.
+/// An invite addressed to the signed-in user, from `GET /invites`, to accept or decline.
 class PendingInvite {
   const PendingInvite({
     required this.id,
@@ -151,30 +165,41 @@ class PendingInvite {
   );
 }
 
+/// How an expense is divided between people.
 enum SplitType {
   even('EVEN', S.splitEven),
   exact('EXACT', S.splitExact),
   percent('PERCENT', S.splitPercent);
 
   const SplitType(this.wire, this.label);
+
+  /// The value the API uses.
   final String wire;
+
+  /// The Mongolian label for the split picker.
   final String label;
 
-  /// Unknown values (a newer server) read as [exact]: the rows still carry each person's amount,
-  /// so one odd expense can't break the whole group page.
-  static SplitType fromWire(String value) => values.firstWhere((t) => t.wire == value, orElse: () => SplitType.exact);
+  /// Parses the API value. An unknown value from a newer server reads as [exact], because the
+  /// splits still carry each person's amount and one odd expense shouldn't break the group page.
+  static SplitType fromWire(String value) {
+    return values.firstWhere((type) => type.wire == value, orElse: () => SplitType.exact);
+  }
 }
 
+/// One person's share of an expense, as worked out by the server.
 class Split {
   const Split({required this.userId, required this.amountCents});
 
   final String userId;
+
+  /// Their share in minor units.
   final int amountCents;
 
   factory Split.fromJson(Map<String, dynamic> json) =>
       Split(userId: json['userId'] as String, amountCents: json['amountCents'] as int);
 }
 
+/// Something one member paid for that is shared between some of the group.
 class Expense {
   const Expense({
     required this.id,
@@ -194,16 +219,26 @@ class Expense {
   final String id;
   final String groupId;
   final String description;
+
+  /// The total in minor units.
   final int amountCents;
+
+  /// User id of the member who paid.
   final String paidBy;
   final SplitType splitType;
+
+  /// Everyone's share. The shares always add up to [amountCents].
   final List<Split> splits;
   final bool hasReceipt;
   final DateTime createdAt;
 
-  /// Sent back with an edit: the server refuses it (EXPENSE_CHANGED) if someone changed it meanwhile.
+  /// Sent back with an edit. The server answers `EXPENSE_CHANGED` if someone else edited it first.
   final int version;
+
+  /// When it was last edited, or null if it never was.
   final DateTime? updatedAt;
+
+  /// User id of whoever last edited it.
   final String? updatedBy;
 
   factory Expense.fromJson(Map<String, dynamic> json) => Expense(
@@ -221,6 +256,7 @@ class Expense {
     updatedBy: json['updatedBy'] as String?,
   );
 
+  /// A copy with [hasReceipt] changed, used after a receipt upload.
   Expense copyWith({bool? hasReceipt}) => Expense(
     id: id,
     groupId: groupId,
@@ -237,19 +273,21 @@ class Expense {
   );
 }
 
+/// Where one member stands in a group.
 class MemberBalance {
   const MemberBalance({required this.userId, required this.name, required this.netCents});
 
   final String userId;
   final String name;
 
-  /// Positive: the group owes them. Negative: they owe the group.
+  /// Positive when the group owes them, negative when they owe the group.
   final int netCents;
 
   factory MemberBalance.fromJson(Map<String, dynamic> json) =>
       MemberBalance(userId: json['userId'] as String, name: json['name'] as String, netCents: json['netCents'] as int);
 }
 
+/// A payment the server suggests to settle the group.
 class Transfer {
   const Transfer({required this.fromUserId, required this.toUserId, required this.amountCents});
 
@@ -264,11 +302,16 @@ class Transfer {
   );
 }
 
+/// A group's balances and the fewest payments that would settle them, from `GET /groups/:id/balances`.
 class Balances {
   const Balances({required this.currency, required this.balances, required this.transfers});
 
   final String currency;
+
+  /// One entry per member. They add up to zero.
   final List<MemberBalance> balances;
+
+  /// Suggested payments that bring everyone to zero.
   final List<Transfer> transfers;
 
   factory Balances.fromJson(Map<String, dynamic> json) => Balances(
@@ -277,14 +320,16 @@ class Balances {
     transfers: _list(json['transfers'], Transfer.fromJson),
   );
 
+  /// The member's net balance, or 0 if they aren't listed.
   int netOf(String userId) {
-    for (final b in balances) {
-      if (b.userId == userId) return b.netCents;
+    for (final balance in balances) {
+      if (balance.userId == userId) return balance.netCents;
     }
     return 0;
   }
 }
 
+/// A recorded payment from one member to another.
 class Settlement {
   const Settlement({
     required this.id,
@@ -308,32 +353,37 @@ class Settlement {
     createdAt: DateTime.parse(json['createdAt'] as String),
   );
 
+  /// Whether [userId] paid or received this payment. Only they may delete it.
   bool involves(String userId) => fromUserId == userId || toUserId == userId;
 }
 
-/// A presigned S3 POST: send every field, then the file last as `file`. Then confirm the [key].
+/// Permission to upload one file straight to S3, from the API. See [ApiClient.postPresigned].
 class PresignedPost {
   const PresignedPost({required this.uploadUrl, required this.fields, required this.key, required this.maxBytes});
 
+  /// The S3 bucket URL to POST the form to.
   final String uploadUrl;
+
+  /// Signed form fields that must be sent unchanged, before the file.
   final Map<String, String> fields;
 
-  /// Where the object lands; the confirm call sends it back.
+  /// Where the object lands in the bucket. The confirm call sends it back to the API.
   final String key;
 
-  /// S3 refuses anything bigger (the policy says so); checked before uploading too.
+  /// The largest file the signed policy accepts, in bytes.
   final int maxBytes;
 
   factory PresignedPost.fromJson(Map<String, dynamic> json) => PresignedPost(
     uploadUrl: json['uploadUrl'] as String,
-    fields: (json['fields'] as Map<String, dynamic>).map((k, v) => MapEntry(k, v as String)),
+    fields: (json['fields'] as Map<String, dynamic>).map((name, value) => MapEntry(name, value as String)),
     key: json['key'] as String,
     maxBytes: json['maxBytes'] as int? ?? 10 * 1024 * 1024,
   );
 }
 
-// ---------------------------------------------------------------- bills (QR bill splitting)
+// QR bills
 
+/// Bank details guests transfer money to.
 class PaymentInfo {
   const PaymentInfo({required this.bankName, required this.accountNumber, required this.accountName});
 
@@ -347,9 +397,11 @@ class PaymentInfo {
     accountName: json['accountName'] as String,
   );
 
+  /// The JSON the API expects.
   Map<String, dynamic> toJson() => {'bankName': bankName, 'accountNumber': accountNumber, 'accountName': accountName};
 }
 
+/// One line on a bill, and who claimed it.
 class BillItem {
   const BillItem({
     required this.id,
@@ -363,10 +415,10 @@ class BillItem {
   final String name;
   final int priceCents;
 
-  /// Guest ids sharing this line.
+  /// Ids of the guests sharing this line.
   final List<String> claimedBy;
 
-  /// Guest id -> their share of the line, computed by the server.
+  /// Each claiming guest's share of the price, keyed by guest id. Worked out by the server.
   final Map<String, int> shares;
 
   factory BillItem.fromJson(Map<String, dynamic> json) => BillItem(
@@ -374,10 +426,11 @@ class BillItem {
     name: json['name'] as String,
     priceCents: json['priceCents'] as int,
     claimedBy: (json['claimedBy'] as List<dynamic>).cast<String>(),
-    shares: (json['shares'] as Map<String, dynamic>).map((k, v) => MapEntry(k, v as int)),
+    shares: (json['shares'] as Map<String, dynamic>).map((guestId, cents) => MapEntry(guestId, cents as int)),
   );
 }
 
+/// Someone who joined a bill, including the host.
 class BillGuest {
   const BillGuest({
     required this.id,
@@ -394,18 +447,22 @@ class BillGuest {
   final String name;
   final bool isHost;
 
-  /// Marked paid, and what they marked covers their current total.
+  /// Whether they're marked paid and the amount covers their current total.
   final bool paid;
+
+  /// Ids of the items they claimed.
   final List<String> itemIds;
+
+  /// Their share of the bill.
   final int totalCents;
 
-  /// What the guest marked as paid (0 = not marked).
+  /// What they're marked as having paid. 0 means not marked.
   final int paidCents;
 
-  /// totalCents − paidCents, from the server: positive = still owes, negative = paid too much.
+  /// [totalCents] minus [paidCents]. Positive means they still owe, negative means they paid too much.
   final int dueCents;
 
-  /// Marked paid, but their ticks changed afterwards so the amounts differ.
+  /// Whether they were marked paid but changed their items afterwards, so what they paid differs from their total.
   bool get paidDiffers => paidCents > 0 && dueCents != 0;
 
   factory BillGuest.fromJson(Map<String, dynamic> json) => BillGuest(
@@ -420,7 +477,7 @@ class BillGuest {
   );
 }
 
-/// A bill as the host sees it. Every total is computed by the server on each read.
+/// A bill as its host sees it. The server works out every total on each read.
 class Bill {
   const Bill({
     required this.id,
@@ -442,38 +499,55 @@ class Bill {
     this.updatedAt,
   });
 
+  /// The guest id the server gives the host.
   static const hostGuestId = 'host';
 
   final String id;
+
+  /// Short code guests put in the bank transfer reference, so the host can match payments.
   final String code;
   final String title;
   final String currency;
+
+  /// Whether guests can still change what they claimed.
   final bool isOpen;
   final String hostName;
   final List<BillItem> items;
+
+  /// Everyone on the bill, the host included.
   final List<BillGuest> guests;
   final int totalCents;
+
+  /// The part of the total nobody has claimed yet.
   final int unclaimedCents;
 
-  /// What the guests (not the host) owe the host, and how much of it they've marked paid.
+  /// What the guests, not counting the host, owe the host.
   final int owedCents;
+
+  /// How much of [owedCents] guests have marked as paid.
   final int paidCents;
   final PaymentInfo? payment;
+
+  /// Whether the host uploaded a bank QR screenshot for guests.
   final bool hasPayQr;
 
   /// The link in the QR code. Guests open it in their phone's browser.
   final String url;
   final DateTime createdAt;
 
-  /// Last change on the server. A poll that answers with an older one is stale and is dropped.
+  /// The last change on the server. A poll that answers with an older value is stale and is dropped.
   final DateTime? updatedAt;
 
-  BillGuest get host => guests.firstWhere((g) => g.isHost);
-  List<BillGuest> get others => guests.where((g) => !g.isHost).toList();
+  /// The host's own entry in [guests].
+  BillGuest get host => guests.firstWhere((guest) => guest.isHost);
 
+  /// Every guest except the host.
+  List<BillGuest> get others => guests.where((guest) => !guest.isHost).toList();
+
+  /// The guest's name, or an empty string for an id that isn't on the bill.
   String nameOf(String guestId) {
-    for (final g in guests) {
-      if (g.id == guestId) return g.name;
+    for (final guest in guests) {
+      if (guest.id == guestId) return guest.name;
     }
     return '';
   }
@@ -499,6 +573,7 @@ class Bill {
   );
 }
 
+/// A bill as it appears in the bills list.
 class BillSummary {
   const BillSummary({
     required this.id,
@@ -516,7 +591,11 @@ class BillSummary {
   final String currency;
   final bool isOpen;
   final int totalCents;
+
+  /// Guests other than the host.
   final int guestCount;
+
+  /// How many of those guests have paid.
   final int paidCount;
   final DateTime createdAt;
 

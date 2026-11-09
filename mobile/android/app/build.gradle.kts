@@ -7,13 +7,13 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
-// Release signing comes from android/key.properties (git-ignored, never committed):
+// Release signing reads android/key.properties, which is git-ignored:
 //   storeFile=/absolute/path/to/netzero-upload.jks
 //   storePassword=...
 //   keyAlias=upload
 //   keyPassword=...
-// Without that file, release builds fall back to the debug key so `flutter run --release` still works
-// locally. Such a build can't be uploaded to Google Play.
+// Without that file, release builds use the debug key so `flutter run --release` still works locally.
+// A build signed that way can't be uploaded to Google Play.
 val keystorePropertiesFile = rootProject.file("key.properties")
 val keystoreProperties =
     Properties().apply {
@@ -32,17 +32,11 @@ android {
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "mn.everestsolution.netzero"
-        // You can update the following values to match your application needs.
-        // For more information, see: https://flutter.dev/to/review-gradle-config.
-        // Android 8.0+: sentry_flutter 10 requires API 26.
+        // Android 8.0, the oldest version sentry_flutter 10 supports.
         minSdk = 26
         targetSdk = flutter.targetSdkVersion
-        // Uses the version code from pubspec.yaml. When using split APKs, 1000 * ABI_VERSION
-        // is added automatically by Flutter. (https://developer.android.com/studio/build/configure-apk-splits#configure-APK-versions)
-        // You can force using the value of versionCode by specifying the `-P force-version-code-ignoring-abi=true`
-        // flag during build.
+        // Both come from the version line in pubspec.yaml.
         versionCode = flutter.versionCode
         versionName = flutter.versionName
     }

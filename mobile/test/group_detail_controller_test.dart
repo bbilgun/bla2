@@ -1,3 +1,4 @@
+// GroupDetailController: paging the expenses, refresh ordering, members and invites.
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -13,189 +14,226 @@ void main() {
 
   late FakeGroups groups;
   late FakeExpenses expenses;
-  late GroupDetailController c;
+  late GroupDetailController controller;
 
   setUp(() {
     Get.testMode = true;
     recordNotifications();
     groups = FakeGroups();
-    expenses = FakeExpenses([for (var i = 1; i <= 7; i++) expenseOf('e$i')]); // pages of 2
-    c = GroupDetailController('g1', groups, expenses, myUserId: () => 'a');
+    // Seven expenses served two to a page.
+    expenses = FakeExpenses([for (var i = 1; i <= 7; i++) expenseOf('e$i')]);
+    controller = GroupDetailController('g1', groups, expenses, myUserId: () => 'a');
   });
 
-  List<String> ids() => c.expenses.map((e) => e.id).toList();
+  List<String> ids() => controller.expenses.map((expense) => expense.id).toList();
 
-  group('pagination', () {
-    test('first page, then the next pages in order, then no more', () async {
-      await c.load();
+  group('paging', () {
+    test('loads the first page, then the next pages in order, then stops', () async {
+      await controller.load();
+
       expect(ids(), ['e1', 'e2']);
-      expect(c.hasMore, isTrue);
-      expect(c.shouldAutoLoad, isTrue);
+      expect(controller.hasMore, isTrue);
+      expect(controller.shouldAutoLoad, isTrue);
 
-      await c.loadMore();
-      await c.loadMore();
-      await c.loadMore();
+      await controller.loadMore();
+      await controller.loadMore();
+      await controller.loadMore();
+
       expect(ids(), ['e1', 'e2', 'e3', 'e4', 'e5', 'e6', 'e7']);
-      expect(c.hasMore, isFalse);
-      expect(c.shouldAutoLoad, isFalse);
+      expect(controller.hasMore, isFalse);
+      expect(controller.shouldAutoLoad, isFalse);
       expect(expenses.listCalls, [null, 'e2', 'e4', 'e6']);
     });
 
-    test('a failed page stops auto-loading until "load more" is tapped (no tight retry loop)', () async {
-      await c.load();
+    test('stops auto-loading after a failed page until "load more" is tapped', () async {
+      await controller.load();
       expenses.failNextPage = networkError();
-      await c.loadMore();
+
+      await controller.loadMore();
+
       expect(ids(), ['e1', 'e2']);
-      expect(c.loadMoreFailed, isTrue);
-      expect(c.hasMore, isTrue); // the button stays
-      expect(c.shouldAutoLoad, isFalse); // but the list doesn't fetch on its own
+      expect(controller.loadMoreFailed, isTrue);
+      // The button stays, but the list doesn't fetch on its own.
+      expect(controller.hasMore, isTrue);
+      expect(controller.shouldAutoLoad, isFalse);
       expect(shown.single, startsWith(S.couldNotLoadMore));
 
-      await c.loadMore(); // the button
+      // The user taps the button.
+      await controller.loadMore();
+
       expect(ids(), ['e1', 'e2', 'e3', 'e4']);
-      expect(c.loadMoreFailed, isFalse);
-      expect(c.shouldAutoLoad, isTrue);
+      expect(controller.loadMoreFailed, isFalse);
+      expect(controller.shouldAutoLoad, isTrue);
     });
 
-    test('loadMore while one is in flight does nothing', () async {
-      await c.load();
+    test('ignores "load more" while one is in flight', () async {
+      await controller.load();
       expenses.gate = Completer<void>();
-      final first = c.loadMore();
-      await c.loadMore();
+
+      final first = controller.loadMore();
+      await controller.loadMore();
       expenses.gate!.complete();
       await first;
+
       expect(expenses.listCalls, [null, 'e2']);
       expect(ids(), ['e1', 'e2', 'e3', 'e4']);
     });
 
-    test('a refresh after a write discards a "load more" still in flight (no out-of-order pages)', () async {
-      await c.load();
+    test('a refresh after a write discards a "load more" still in flight', () async {
+      await controller.load();
       final gate = expenses.gate = Completer<void>();
-      final stalePage = c.loadMore(); // page 2 of the old list, held
+      // Page 2 of the old list, held until the gate opens.
+      final stalePage = controller.loadMore();
       expenses.gate = null;
 
-      expenses.all = [expenseOf('new'), ...expenses.all]; // someone added an expense
-      await c.refreshAfterWrite();
+      // Someone adds an expense.
+      expenses.all = [expenseOf('new'), ...expenses.all];
+      await controller.refreshAfterWrite();
+
       expect(ids(), ['new', 'e1']);
 
       gate.complete();
       await stalePage;
-      expect(ids(), ['new', 'e1']); // the old page 2 (e3, e4) was not appended
-      expect(c.loadingMore, isFalse);
 
-      await c.loadMore();
+      // The old page 2 (e3, e4) was not appended.
+      expect(ids(), ['new', 'e1']);
+      expect(controller.loadingMore, isFalse);
+
+      await controller.loadMore();
+
       expect(ids(), ['new', 'e1', 'e2', 'e3']);
     });
 
     test('an older refresh that answers late cannot overwrite a newer one', () async {
-      await c.load();
+      await controller.load();
       final gate = expenses.gate = Completer<void>();
-      final older = c.refreshAfterWrite(); // sees e1..e7, held
+      // This refresh sees e1 to e7 and is held.
+      final older = controller.refreshAfterWrite();
       expenses.gate = null;
       expenses.all = [expenseOf('newer'), ...expenses.all];
-      await c.refreshAfterWrite();
+
+      await controller.refreshAfterWrite();
       gate.complete();
       await older;
+
       expect(ids().first, 'newer');
     });
   });
 
-  test('pull-to-refresh refetches the group too (members, invites)', () async {
-    await c.load();
+  test('pull-to-refresh refetches the group too', () async {
+    await controller.load();
     expect(groups.getCalls, 1);
-    await c.refreshAll();
+
+    await controller.refreshAll();
+
     expect(groups.getCalls, 2);
   });
 
-  test('retry shows the skeleton instead of flashing the empty state', () async {
-    c.loading.value = false;
-    final retrying = c.retry();
-    expect(c.loading.value, isTrue);
+  test('retry shows the skeleton while it loads', () async {
+    controller.loading.value = false;
+
+    final retrying = controller.retry();
+
+    expect(controller.loading.value, isTrue);
     await retrying;
-    expect(c.loading.value, isFalse);
+    expect(controller.loading.value, isFalse);
   });
 
   group('members and invites', () {
-    setUp(() async => c.load());
+    setUp(() async => controller.load());
 
-    test('invite by email: checks the address, then shows the invite', () async {
-      expect(await c.invite('not-an-email'), S.enterValidEmail);
+    test('an invite checks the address, then shows the invite', () async {
+      expect(await controller.invite('not-an-email'), S.enterValidEmail);
       expect(groups.calls, isEmpty);
-      expect(await c.invite(' new@x.com '), isNull);
+
+      expect(await controller.invite(' new@x.com '), isNull);
       expect(groups.calls, ['invite new@x.com']);
-      expect(c.group.value!.invites.single.email, 'new@x.com');
+      expect(controller.group.value!.invites.single.email, 'new@x.com');
     });
 
     test('inviting an existing member says so', () async {
       groups.failWith = apiError('ALREADY_MEMBER');
-      expect(await c.invite('b@x.com'), 'ALREADY_MEMBER');
+
+      expect(await controller.invite('b@x.com'), 'ALREADY_MEMBER');
     });
 
-    test('cancel an invite; one that is already gone just refreshes', () async {
-      await c.invite('new@x.com');
-      final invite = c.group.value!.invites.single;
-      expect(await c.cancelInvite(invite), isNull);
-      expect(c.group.value!.invites, isEmpty);
+    test('cancelling an invite that is already gone just refreshes', () async {
+      await controller.invite('new@x.com');
+      final invite = controller.group.value!.invites.single;
+
+      expect(await controller.cancelInvite(invite), isNull);
+      expect(controller.group.value!.invites, isEmpty);
 
       groups.failWith = apiError('INVITE_NOT_FOUND', status: 404);
-      expect(await c.cancelInvite(invite), isNull);
+
+      expect(await controller.cancelInvite(invite), isNull);
     });
 
-    test("removing someone who still owes shows why it's blocked", () async {
+    test("removing someone who still owes says why it's blocked", () async {
       groups.failWith = apiError('BALANCE_NOT_ZERO');
-      expect(await c.removeMember(bat), S.removeBlocked);
-      expect(c.group.value!.members, contains(bat));
 
-      expect(await c.removeMember(bat), isNull);
-      expect(c.group.value!.members, isNot(contains(bat)));
+      expect(await controller.removeMember(bat), S.removeBlocked);
+      expect(controller.group.value!.members, contains(bat));
+
+      expect(await controller.removeMember(bat), isNull);
+      expect(controller.group.value!.members, isNot(contains(bat)));
     });
 
     test('leaving with a balance is blocked with its own message', () async {
       groups.failWith = apiError('BALANCE_NOT_ZERO');
-      expect(await c.leave(), S.leaveBlocked);
-      expect(await c.leave(), isNull);
+
+      expect(await controller.leave(), S.leaveBlocked);
+      expect(await controller.leave(), isNull);
       expect(shown.last, startsWith(S.leftGroup));
     });
 
-    test('delete group: BALANCES_NOT_ZERO is shown; success says so', () async {
+    test('deleting a group with balances shows the error, and success says so', () async {
       groups.failWith = apiError('BALANCES_NOT_ZERO');
-      expect(await c.deleteGroup(), 'BALANCES_NOT_ZERO');
-      expect(await c.deleteGroup(), isNull);
+
+      expect(await controller.deleteGroup(), 'BALANCES_NOT_ZERO');
+      expect(await controller.deleteGroup(), isNull);
       expect(shown.last, startsWith(S.groupDeleted));
     });
 
-    test('rename: trimmed, 1-80 characters', () async {
-      expect(await c.rename('   '), S.giveGroupName);
-      expect(await c.rename('x' * 81), S.groupNameTooLong);
-      expect(await c.rename('  Байр  '), isNull);
+    test('renaming trims the name and allows 1 to 80 characters', () async {
+      expect(await controller.rename('   '), S.giveGroupName);
+      expect(await controller.rename('x' * 81), S.groupNameTooLong);
+
+      expect(await controller.rename('  Байр  '), isNull);
       expect(groups.calls.last, 'rename Байр');
-      expect(c.group.value!.name, 'Байр');
+      expect(controller.group.value!.name, 'Байр');
     });
   });
 
-  test('findExpense walks the pages for an expense that is not loaded', () async {
-    await c.load();
-    final found = await c.findExpense('e7');
+  test('findExpense pages through for an expense that is not loaded', () async {
+    await controller.load();
+
+    final found = await controller.findExpense('e7');
+
     expect(found?.id, 'e7');
-    expect(await c.findExpense('gone'), isNull);
+    expect(await controller.findExpense('gone'), isNull);
   });
 
-  test('replaceExpense and removeExpense patch the loaded list with server data', () async {
-    await c.load();
-    c.replaceExpense(expenseOf('e2', version: 2, description: 'Taxi'));
-    expect(c.expenses[1].description, 'Taxi');
-    c.removeExpense('e1');
+  test('replaceExpense and removeExpense patch the loaded list', () async {
+    await controller.load();
+
+    controller.replaceExpense(expenseOf('e2', version: 2, description: 'Taxi'));
+    expect(controller.expenses[1].description, 'Taxi');
+
+    controller.removeExpense('e1');
     expect(ids(), ['e2']);
   });
 
-  test('a balance of a member is read through plain getters', () async {
+  test("the user's balance comes from the loaded balances", () async {
     groups.balancesResult = const Balances(
       currency: 'USD',
       balances: [MemberBalance(userId: 'a', name: 'Anu', netCents: 500)],
       transfers: [Transfer(fromUserId: 'b', toUserId: 'a', amountCents: 500)],
     );
-    await c.load();
-    expect(c.myNetCents, 500);
-    expect(c.isSettled, isFalse);
+
+    await controller.load();
+
+    expect(controller.myNetCents, 500);
+    expect(controller.isSettled, isFalse);
   });
 }

@@ -1,3 +1,4 @@
+// The expense detail page.
 import 'dart:async';
 
 import 'package:get/get.dart';
@@ -17,35 +18,49 @@ class ExpenseController extends GetxController {
   ExpenseController(this.detail, this.expenseId, this._receipts, this._expenses, {PhotoPicker? picker})
     : _picker = picker ?? PhotoPicker();
 
+  /// The group page underneath, which owns the expense list.
   final GroupDetailController detail;
   final String expenseId;
   final ReceiptsRepository _receipts;
   final ExpensesRepository _expenses;
   final PhotoPicker _picker;
 
+  /// Download URL of the receipt photo, once fetched.
   final receiptUrl = RxnString();
+
+  /// True while the receipt URL is being fetched.
   final loadingReceipt = false.obs;
+
+  /// True while a receipt photo uploads.
   final uploading = false.obs;
+
+  /// True while the delete request runs.
   final deleting = false.obs;
+
+  /// The last failure, shown on the page.
   final error = RxnString();
 
-  /// The newest version we've seen, for when it isn't among the group's loaded pages.
+  // The newest version we've seen, for when it isn't among the group's loaded pages.
   final _latest = Rxn<Expense>();
 
-  Expense? get expense => detail.expenses.firstWhereOrNull((e) => e.id == expenseId) ?? _latest.value;
+  /// The expense, or null once it has been deleted.
+  Expense? get expense => _findLoaded() ?? _latest.value;
 
   @override
   void onInit() {
     super.onInit();
-    _latest.value = detail.expenses.firstWhereOrNull((e) => e.id == expenseId);
+    _latest.value = _findLoaded();
     if (expense?.hasReceipt ?? false) unawaited(loadReceipt());
   }
+
+  Expense? _findLoaded() => detail.expenses.firstWhereOrNull((loaded) => loaded.id == expenseId);
 
   void _apply(Expense updated) {
     _latest.value = updated;
     detail.replaceExpense(updated);
   }
 
+  /// Fetches a download URL for the receipt photo.
   Future<void> loadReceipt() async {
     loadingReceipt.value = true;
     try {
@@ -57,8 +72,8 @@ class ExpenseController extends GetxController {
     }
   }
 
-  /// Opens the form in edit mode. Saved: the server's version replaces ours and balances reload.
-  /// Anything else (backed out, changed by someone else, offline): reload from the server.
+  /// Opens the form in edit mode. If it saved, the server's version replaces ours and the balances
+  /// reload. After backing out, a conflict or a network failure, we reload from the server instead.
   Future<void> edit() async {
     final result = await Get.toNamed<Object?>(Routes.editExpensePath(detail.groupId, expenseId));
     if (result is Expense) {
@@ -70,10 +85,11 @@ class ExpenseController extends GetxController {
     }
   }
 
-  /// Group balances, the first page, and this expense's newest version (or that it's gone).
+  /// Refreshes the group's balances and first page, then finds this expense's newest version, or
+  /// learns that it's gone.
   Future<void> reload() async {
     await detail.refreshAfterWrite();
-    if (detail.expenses.any((e) => e.id == expenseId)) return;
+    if (detail.expenses.any((loaded) => loaded.id == expenseId)) return;
     try {
       final found = await detail.findExpense(expenseId);
       if (found != null) {
@@ -82,11 +98,11 @@ class ExpenseController extends GetxController {
         _latest.value = null;
       }
     } on ApiException {
-      // Keep showing what we have; the group page is already up to date.
+      // Keep showing what we have. The group page is already up to date.
     }
   }
 
-  /// Returns true once it's deleted (the page then closes).
+  /// Deletes the expense. Returns true once it's gone, and the page then closes.
   Future<bool> delete() async {
     if (deleting.value) return false;
     deleting.value = true;
@@ -97,7 +113,7 @@ class ExpenseController extends GetxController {
       detail.groupGone();
       return false;
     } on ApiException catch (e) {
-      // Not found: someone else deleted it already, which is what we wanted.
+      // Someone else already deleted it, which is what we wanted.
       if (e.code != 'EXPENSE_NOT_FOUND') {
         error.value = e.message;
         return false;
@@ -112,7 +128,7 @@ class ExpenseController extends GetxController {
     return true;
   }
 
-  /// Pick a photo, ask Lambda for a presigned POST, upload straight to S3, confirm, then show it.
+  /// Lets the user pick a photo, uploads it as the receipt, then shows it.
   Future<void> attachReceipt(ImageSource source) async {
     error.value = null;
     final PickedPhoto? photo;
@@ -125,7 +141,8 @@ class ExpenseController extends GetxController {
     if (photo == null) return;
     uploading.value = true;
     try {
-      _apply(await _receipts.upload(detail.groupId, expenseId, photo.bytes, contentType: photo.contentType));
+      final updated = await _receipts.upload(detail.groupId, expenseId, photo.bytes, contentType: photo.contentType);
+      _apply(updated);
       await loadReceipt();
     } on ApiException catch (e) {
       error.value = e.message;

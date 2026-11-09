@@ -1,3 +1,4 @@
+// The add expense form, also used for editing an expense.
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -7,11 +8,11 @@ import '../app/strings.dart';
 import '../controllers/add_expense_controller.dart';
 import '../domain/money.dart';
 import '../models/models.dart';
-import '../services/api_client.dart';
+import '../services/api_exception.dart';
 import 'widgets.dart';
 
-/// Adds an expense, or edits one (the controller's `existing`). Returns the saved [Expense] to the
-/// page that opened it; anything else (backed out, changed by someone else) means "reload".
+/// Adds an expense, or edits the controller's `existing` one. Pops with the saved [Expense].
+/// Popping with anything else, after backing out or a conflict, tells the opener to reload.
 class AddExpensePage extends GetView<AddExpenseController> {
   const AddExpensePage({super.key});
 
@@ -21,7 +22,7 @@ class AddExpensePage extends GetView<AddExpenseController> {
       if (expense != null) {
         Get.back<Object?>(result: expense);
       } else if (controller.outdated && context.mounted) {
-        // Someone else changed (or deleted) it meanwhile: say so, then go back so it's reloaded.
+        // Someone else changed or deleted it meanwhile. Say so, then go back so it's reloaded.
         await showMessage(context, title: S.expenseChangedTitle, message: controller.error.value ?? S.expenseChanged);
         Get.back<Object?>(result: false);
       }
@@ -75,8 +76,11 @@ class AddExpensePage extends GetView<AddExpenseController> {
                 () => DropdownButtonFormField<String>(
                   initialValue: controller.paidBy.value,
                   decoration: InputDecoration(labelText: S.paidBy, errorText: controller.fieldErrors['paidBy']),
-                  items: [for (final m in group.members) DropdownMenuItem(value: m.userId, child: Text(m.name))],
-                  onChanged: (v) => controller.paidBy.value = v ?? controller.paidBy.value,
+                  items: [
+                    for (final member in group.members)
+                      DropdownMenuItem(value: member.userId, child: Text(member.name)),
+                  ],
+                  onChanged: (userId) => controller.paidBy.value = userId ?? controller.paidBy.value,
                 ),
               ),
               const SizedBox(height: 24),
@@ -84,10 +88,10 @@ class AddExpensePage extends GetView<AddExpenseController> {
               const SizedBox(height: 8),
               Obx(
                 () => SegmentedButton<SplitType>(
-                  segments: [for (final t in SplitType.values) ButtonSegment(value: t, label: Text(t.label))],
+                  segments: [for (final type in SplitType.values) ButtonSegment(value: type, label: Text(type.label))],
                   selected: {controller.splitType.value},
-                  onSelectionChanged: (s) {
-                    controller.splitType.value = s.first;
+                  onSelectionChanged: (selected) {
+                    controller.splitType.value = selected.first;
                     controller.fieldErrors.remove('split');
                   },
                 ),
@@ -101,13 +105,12 @@ class AddExpensePage extends GetView<AddExpenseController> {
                 },
               ),
               Obx(() {
-                final e = controller.fieldErrors['split'];
-                return e == null
-                    ? const SizedBox.shrink()
-                    : Padding(
-                        padding: const EdgeInsets.only(top: 8),
-                        child: Text(e, style: TextStyle(color: Theme.of(context).colorScheme.error)),
-                      );
+                final splitError = controller.fieldErrors['split'];
+                if (splitError == null) return const SizedBox.shrink();
+                return Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Text(splitError, style: TextStyle(color: Theme.of(context).colorScheme.error)),
+                );
               }),
               const SizedBox(height: 20),
               Obx(() => InlineError(controller.error.value)),
@@ -128,24 +131,24 @@ class AddExpensePage extends GetView<AddExpenseController> {
   }
 }
 
+/// A checkbox per member for an even split.
 class _EvenSplit extends StatelessWidget {
   const _EvenSplit({required this.controller});
 
   final AddExpenseController controller;
 
-  // Own Obx: the parent Obx only tracks .obs read in its own builder, not in this build().
   @override
   Widget build(BuildContext context) {
     return Obx(
       () => Column(
         children: [
-          for (final m in controller.group.members)
+          for (final member in controller.group.members)
             CheckboxListTile(
               contentPadding: EdgeInsets.zero,
-              value: controller.included.contains(m.userId),
-              onChanged: (_) => controller.toggleIncluded(m.userId),
-              secondary: Initials(m.name, radius: 16),
-              title: Text(m.name),
+              value: controller.included.contains(member.userId),
+              onChanged: (_) => controller.toggleIncluded(member.userId),
+              secondary: Initials(member.name, radius: 16),
+              title: Text(member.name),
             ),
           Align(
             alignment: Alignment.centerLeft,
@@ -157,6 +160,7 @@ class _EvenSplit extends StatelessWidget {
   }
 }
 
+/// An amount field per member for an exact split, with what's left to assign.
 class _ExactSplit extends StatelessWidget {
   const _ExactSplit({required this.controller});
 
@@ -167,20 +171,20 @@ class _ExactSplit extends StatelessWidget {
     final currency = controller.group.currency;
     return Column(
       children: [
-        for (final m in controller.group.members)
+        for (final member in controller.group.members)
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 6),
             child: Row(
               children: [
-                Initials(m.name, radius: 16),
+                Initials(member.name, radius: 16),
                 const SizedBox(width: 12),
-                Expanded(child: Text(m.name)),
+                Expanded(child: Text(member.name)),
                 SizedBox(
                   width: 130,
                   child: Semantics(
-                    label: S.exactShareFor(m.name),
+                    label: S.exactShareFor(member.name),
                     child: TextField(
-                      controller: controller.exactCtrls[m.userId],
+                      controller: controller.exactFields[member.userId],
                       keyboardType: TextInputType.numberWithOptions(decimal: hasMinorUnits(currency)),
                       textAlign: TextAlign.end,
                       decoration: InputDecoration(hintText: amountPlaceholder(currency), isDense: true),
@@ -193,25 +197,24 @@ class _ExactSplit extends StatelessWidget {
         const SizedBox(height: 4),
         Align(
           alignment: Alignment.centerRight,
-          child: Obx(() {
-            final remaining = controller.exactRemainingCents;
-            return Text(
-              remaining == null
-                  ? S.enterTotalFirst
-                  : remaining == 0
-                  ? S.allAssigned
-                  : remaining > 0
-                  ? S.leftToAssign(formatCents(remaining, currency: currency))
-                  : S.tooMuch(formatCents(-remaining, currency: currency)),
-              style: Theme.of(context).textTheme.bodySmall,
-            );
-          }),
+          child: Obx(
+            () => Text(_remainingLabel(controller.exactRemainingCents), style: Theme.of(context).textTheme.bodySmall),
+          ),
         ),
       ],
     );
   }
+
+  String _remainingLabel(int? remaining) {
+    final currency = controller.group.currency;
+    if (remaining == null) return S.enterTotalFirst;
+    if (remaining == 0) return S.allAssigned;
+    if (remaining > 0) return S.leftToAssign(formatCents(remaining, currency: currency));
+    return S.tooMuch(formatCents(-remaining, currency: currency));
+  }
 }
 
+/// A percentage field per member, with a button to split evenly and what's left to assign.
 class _PercentSplit extends StatelessWidget {
   const _PercentSplit({required this.controller});
 
@@ -226,20 +229,20 @@ class _PercentSplit extends StatelessWidget {
             padding: const EdgeInsets.only(bottom: 4),
             child: Text(S.reenterPercents, style: Theme.of(context).textTheme.bodySmall),
           ),
-        for (final m in controller.group.members)
+        for (final member in controller.group.members)
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 6),
             child: Row(
               children: [
-                Initials(m.name, radius: 16),
+                Initials(member.name, radius: 16),
                 const SizedBox(width: 12),
-                Expanded(child: Text(m.name)),
+                Expanded(child: Text(member.name)),
                 SizedBox(
                   width: 110,
                   child: Semantics(
-                    label: S.percentShareFor(m.name),
+                    label: S.percentShareFor(member.name),
                     child: TextField(
-                      controller: controller.percentCtrls[m.userId],
+                      controller: controller.percentFields[member.userId],
                       keyboardType: const TextInputType.numberWithOptions(decimal: true),
                       textAlign: TextAlign.end,
                       decoration: const InputDecoration(hintText: '0.00', suffixText: '%', isDense: true),
@@ -253,18 +256,18 @@ class _PercentSplit extends StatelessWidget {
           children: [
             TextButton(onPressed: controller.splitPercentEvenly, child: const Text(S.splitEvenly)),
             const Spacer(),
-            Obx(() {
-              final left = controller.percentRemainingBp;
-              return Text(
-                left == 0
-                    ? S.percentAssigned
-                    : (left > 0 ? S.leftToAssign(formatBasisPoints(left)) : S.tooMuch(formatBasisPoints(-left))),
-                style: Theme.of(context).textTheme.bodySmall,
-              );
-            }),
+            Obx(
+              () => Text(_remainingLabel(controller.percentRemainingBp), style: Theme.of(context).textTheme.bodySmall),
+            ),
           ],
         ),
       ],
     );
+  }
+
+  String _remainingLabel(int remaining) {
+    if (remaining == 0) return S.percentAssigned;
+    if (remaining > 0) return S.leftToAssign(formatBasisPoints(remaining));
+    return S.tooMuch(formatBasisPoints(-remaining));
   }
 }

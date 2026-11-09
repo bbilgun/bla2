@@ -1,9 +1,11 @@
+// The groups tab: pending invites on top, then the user's groups.
 import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
 import '../app/brand.dart';
+import '../app/notify.dart';
 import '../app/routes.dart';
 import '../app/strings.dart';
 import '../controllers/groups_controller.dart';
@@ -12,6 +14,7 @@ import '../domain/money.dart';
 import '../models/models.dart';
 import 'widgets.dart';
 
+/// Lists the user's groups, with any invites waiting for them above, and a button to create a group.
 class GroupsPage extends GetView<GroupsController> {
   const GroupsPage({super.key});
 
@@ -39,7 +42,9 @@ class GroupsPage extends GetView<GroupsController> {
         final error = controller.error.value;
         if (error != null) return ErrorRetry(message: error, onRetry: controller.retry);
         final groups = controller.groups;
-        final invites = [for (final i in _invites.invites) _InviteCard(i, controller: _invites, groups: controller)];
+        final invites = [
+          for (final invite in _invites.invites) _InviteCard(invite, controller: _invites, groups: controller),
+        ];
         if (groups.isEmpty) {
           return RefreshIndicator(
             onRefresh: _refresh,
@@ -54,9 +59,12 @@ class GroupsPage extends GetView<GroupsController> {
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 96),
             children: [
               ...invites,
-              for (final (i, g) in groups.indexed) ...[
-                if (i > 0) const SizedBox(height: 10),
-                _GroupTile(g, onBuilt: i == groups.length - 1 && list.shouldAutoLoad ? controller.loadMore : null),
+              for (final (index, group) in groups.indexed) ...[
+                if (index > 0) const SizedBox(height: 10),
+                _GroupTile(
+                  group,
+                  onBuilt: index == groups.length - 1 && list.shouldAutoLoad ? controller.loadMore : null,
+                ),
               ],
               LoadMoreFooter(hasMore: list.hasMore, loading: list.loadingMore, onLoadMore: controller.loadMore),
             ],
@@ -73,11 +81,11 @@ class GroupsPage extends GetView<GroupsController> {
     );
     if (created == null) return;
     final message = await controller.create(created.name, created.currency);
-    if (message != null) Get.snackbar(S.couldNotCreateGroup, message, snackPosition: SnackPosition.BOTTOM);
+    if (message != null) notify(S.couldNotCreateGroup, message);
   }
 }
 
-/// Name and currency for a new group. Owns (and disposes) its text controller.
+/// Asks for a new group's name and currency, and pops them as a record.
 class _CreateGroupDialog extends StatefulWidget {
   const _CreateGroupDialog();
 
@@ -98,8 +106,14 @@ class _CreateGroupDialogState extends State<_CreateGroupDialog> {
 
   void _submit() {
     final name = _name.text.trim();
-    if (name.isEmpty) return setState(() => _error = S.giveGroupName);
-    if (name.length > 80) return setState(() => _error = S.groupNameTooLong);
+    if (name.isEmpty) {
+      setState(() => _error = S.giveGroupName);
+      return;
+    }
+    if (name.length > 80) {
+      setState(() => _error = S.groupNameTooLong);
+      return;
+    }
     Navigator.of(context).pop((name: name, currency: _currency));
   }
 
@@ -120,8 +134,8 @@ class _CreateGroupDialogState extends State<_CreateGroupDialog> {
         DropdownButtonFormField<String>(
           initialValue: _currency,
           decoration: const InputDecoration(labelText: S.currency),
-          items: [for (final c in currencyCodes) DropdownMenuItem(value: c, child: Text(c))],
-          onChanged: (v) => _currency = v ?? _currency,
+          items: [for (final code in currencyCodes) DropdownMenuItem(value: code, child: Text(code))],
+          onChanged: (code) => _currency = code ?? _currency,
         ),
       ],
     ),
@@ -136,7 +150,7 @@ class _CreateGroupDialogState extends State<_CreateGroupDialog> {
   );
 }
 
-/// An invite to me: join, or decline.
+/// An invite addressed to the user, with buttons to join or decline.
 class _InviteCard extends StatelessWidget {
   const _InviteCard(this.invite, {required this.controller, required this.groups});
 
@@ -147,7 +161,7 @@ class _InviteCard extends StatelessWidget {
   Future<void> _accept() async {
     final group = await controller.accept(invite);
     if (group == null) {
-      // INVITE_NOT_FOUND can mean an earlier accept went through: the group may be in the list now.
+      // INVITE_NOT_FOUND can mean an earlier accept went through, so the group may already be in the list.
       unawaited(groups.refreshQuietly());
       return;
     }
@@ -214,12 +228,13 @@ class _InviteCard extends StatelessWidget {
   }
 }
 
+/// One group in the list: name, members' first names and currency.
 class _GroupTile extends StatelessWidget {
   const _GroupTile(this.group, {this.onBuilt});
 
   final Group group;
 
-  /// The last row asks for the next page once it's on screen.
+  /// Called after the tile is built. The last row uses it to fetch the next page.
   final VoidCallback? onBuilt;
 
   @override
@@ -228,7 +243,7 @@ class _GroupTile extends StatelessWidget {
     if (built != null) WidgetsBinding.instance.addPostFrameCallback((_) => built());
     final text = Theme.of(context).textTheme;
     final scheme = Theme.of(context).colorScheme;
-    final names = group.members.map((m) => m.name.split(' ').first).join(', ');
+    final names = group.members.map((member) => member.name.split(' ').first).join(', ');
     return Card(
       clipBehavior: Clip.antiAlias,
       child: InkWell(
@@ -265,6 +280,7 @@ class _GroupTile extends StatelessWidget {
   }
 }
 
+/// A small grey label, used for currency codes.
 class _Pill extends StatelessWidget {
   const _Pill(this.label);
 
@@ -284,6 +300,7 @@ class _Pill extends StatelessWidget {
   }
 }
 
+/// What the tab shows before the first group.
 class _EmptyGroups extends StatelessWidget {
   const _EmptyGroups();
 

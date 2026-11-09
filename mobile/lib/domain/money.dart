@@ -1,32 +1,26 @@
-/// Money in the app is always an `int` number of the currency's minor unit ("cents").
-///
-/// The app never does money math: the server splits, sums and balances.
-/// These functions only convert between what a person types/reads and integer minor units,
-/// using integer and string operations only. `double.parse(x) * 100` is banned:
-/// double.parse('1.15') * 100 == 114.99999999999999.
-///
-/// How many minor units a currency has comes from [currencies], the one table every picker and
-/// formatter uses: 1 USD = 100 cents, but 1 KRW = 1 won (no decimals), so ₩25,000 is 25000.
-library;
+// Converting money between what people type or read and integer minor units ("cents").
+// Amounts are always ints and the parsing never goes through double. docs/mobile.md explains why.
 
-/// One currency the app knows how to show.
+/// How the app shows one currency.
 class CurrencyInfo {
   const CurrencyInfo(this.code, this.symbol, this.digits, {this.symbolAfter = false, this.hideZeroFraction = false});
 
   /// ISO 4217 code, as the server stores it.
   final String code;
+
+  /// Symbol shown next to amounts, such as "₮". Currencies outside the table use their code.
   final String symbol;
 
-  /// Minor-unit digits: 2 for USD (cents), 0 for KRW and JPY.
+  /// Digits after the decimal point: 2 for USD, 0 for KRW and JPY.
   final int digits;
 
-  /// Written after the number, the way it's done in Mongolia: "12,500₮".
+  /// Whether the symbol goes after the number, as in Mongolia: "12,500₮".
   final bool symbolAfter;
 
-  /// "42,500₮" rather than "42,500.00₮": tugrik amounts are almost always whole.
+  /// Whether to drop a fraction of zero, so tugrik shows "42,500₮" rather than "42,500.00₮".
   final bool hideZeroFraction;
 
-  /// 10^digits: minor units per major unit.
+  /// Minor units per major unit, 10 to the power of [digits].
   int get unit => _pow10(digits);
 }
 
@@ -41,102 +35,114 @@ const currencies = <CurrencyInfo>[
   CurrencyInfo('CNY', '¥', 2),
 ];
 
-/// The codes, for currency pickers.
-final currencyCodes = [for (final c in currencies) c.code];
+/// The currency codes in table order, for pickers.
+final currencyCodes = [for (final currency in currencies) currency.code];
 
-/// The table entry, or a plain 2-digit entry that shows the code ("CHF 12.34") for anything else.
+/// The table entry for [code]. Unknown codes get two decimals and show the code, as in "CHF 12.34".
 CurrencyInfo currencyInfo(String code) {
-  for (final c in currencies) {
-    if (c.code == code) return c;
+  for (final currency in currencies) {
+    if (currency.code == code) return currency;
   }
   return CurrencyInfo(code, code, 2);
 }
 
-int _pow10(int n) {
-  var v = 1;
-  for (var i = 0; i < n; i++) {
-    v *= 10;
+int _pow10(int exponent) {
+  var result = 1;
+  for (var i = 0; i < exponent; i++) {
+    result *= 10;
   }
-  return v;
+  return result;
 }
 
-// "-25,000.50" / "25000": the whole part is plain digits or groups of three split by commas;
-// the fraction (after '.') is checked against the currency's digits below.
+// Matches "-25,000.50" or "25000": plain digits or comma-separated thousands, then an optional
+// fraction after a dot. The fraction length is checked against the currency below.
 final _dotAmount = RegExp(r'^(-)?(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d+))?$');
-// "7,10" / "0,5": a comma typed as the decimal point (Mongolian and European keyboards).
-// Three digits after a comma ("25,000") are a thousands separator instead, matched by [_dotAmount].
+// Matches "7,10" or "0,5", where a Mongolian or European keyboard put a comma as the decimal point.
+// Three digits after a comma ("25,000") are thousands instead, and _dotAmount handles those.
 final _commaDecimal = RegExp(r'^(-)?(\d+),(\d{1,2})$');
 final _spaces = RegExp(r'[\s  ]');
 
-/// Text to an integer amount with [digits] fraction digits, or null.
+// Parses text into an int scaled by 10^digits, or returns null.
 int? _parseFixed(String input, int digits) {
-  final s = input.trim().replaceAll(_spaces, ''); // "25 000"
-  final match = _commaDecimal.firstMatch(s) ?? _dotAmount.firstMatch(s);
+  // Spaces are allowed as thousands separators: "25 000".
+  final text = input.trim().replaceAll(_spaces, '');
+  final match = _commaDecimal.firstMatch(text) ?? _dotAmount.firstMatch(text);
   if (match == null) return null;
   final whole = match.group(2)!.replaceAll(',', '');
-  final frac = match.group(3) ?? '';
-  if (whole.length > 13 || frac.length > digits) return null;
-  final value = int.parse(whole) * _pow10(digits) + (frac.isEmpty ? 0 : int.parse(frac.padRight(digits, '0')));
-  return match.group(1) == null ? value : -value;
+  final fraction = match.group(3) ?? '';
+  if (whole.length > 13 || fraction.length > digits) return null;
+  final fractionUnits = fraction.isEmpty ? 0 : int.parse(fraction.padRight(digits, '0'));
+  final value = int.parse(whole) * _pow10(digits) + fractionUnits;
+  final isNegative = match.group(1) != null;
+  return isNegative ? -value : value;
 }
 
-/// USD: "12.34" -> 1234, "12.3" -> 1230, "12" -> 1200, "0,5" -> 50, "25,000" -> 2500000.
-/// KRW: "25,000" -> 25000, "12.5" -> null. Returns null if it isn't an amount.
+/// Parses an amount the user typed into minor units, or returns null if it isn't one.
+/// For USD, "12.3" gives 1230 and "0,5" gives 50. For KRW, which has no decimals, "12.5" gives null.
 int? tryParseCents(String input, {String currency = 'USD'}) => _parseFixed(input, currencyInfo(currency).digits);
 
-/// Like [tryParseCents] but throws [FormatException].
+/// Like [tryParseCents], but throws a [FormatException] when the text isn't an amount.
 int parseCents(String input, {String currency = 'USD'}) {
   final value = tryParseCents(input, currency: currency);
   if (value == null) throw FormatException('Not a money amount', input);
   return value;
 }
 
-/// Percent text to basis points: "33.33" -> 3333, "50" -> 5000.
+/// Parses a percentage into basis points, so "33.33" gives 3333. Returns null if it isn't one.
 int? tryParseBasisPoints(String input) => _parseFixed(input, 2);
 
-/// "₮", "$", or the code itself ("CHF") when there's no symbol.
+/// The currency's symbol, or its code when the app has no symbol for it.
 String currencySymbol(String currency) => currencyInfo(currency).symbol;
 
+/// Whether the symbol is written after the number.
 bool symbolAfterAmount(String currency) => currencyInfo(currency).symbolAfter;
 
-/// Whether amounts in [currency] have a fraction part (for the keyboard and hints).
+/// Whether amounts in [currency] have a fraction part. Decides the keyboard type and hints.
 bool hasMinorUnits(String currency) => currencyInfo(currency).digits > 0;
 
-/// What an empty amount field shows: "0.00", or "0" for KRW.
+/// Hint text for an empty amount field: "0.00", or "0" for currencies without decimals.
 String amountPlaceholder(String currency) => hasMinorUnits(currency) ? '0.00' : '0';
 
-({String whole, String frac}) _split(int abs, CurrencyInfo info) {
-  final whole = (abs ~/ info.unit).toString();
-  final frac = info.digits == 0 ? '' : (abs % info.unit).toString().padLeft(info.digits, '0');
-  return (whole: whole, frac: frac);
+({String whole, String fraction}) _split(int absolute, CurrencyInfo info) {
+  final whole = (absolute ~/ info.unit).toString();
+  final fraction = info.digits == 0 ? '' : (absolute % info.unit).toString().padLeft(info.digits, '0');
+  return (whole: whole, fraction: fraction);
 }
 
+// Matches each position that needs a thousands comma.
 final _thousands = RegExp(r'\B(?=(\d{3})+(?!\d))');
 
-/// 1234 -> "$12.34", -5 -> "-$0.05", 123456789 -> "$1,234,567.89"; MNT: 1250000 -> "12,500₮",
-/// 1234 -> "12.34₮"; KRW: 25000 -> "₩25,000".
+/// Formats minor units for display with the currency symbol and thousands separators.
+/// For example 123456789 USD is "$1,234,567.89", 1250000 MNT is "12,500₮" and 25000 KRW is "₩25,000".
 String formatCents(int cents, {String currency = 'USD'}) {
   final info = currencyInfo(currency);
   final sign = cents < 0 ? '-' : '';
   final parts = _split(cents.abs(), info);
   final grouped = parts.whole.replaceAllMapped(_thousands, (_) => ',');
-  final hideFrac = parts.frac.isEmpty || (info.hideZeroFraction && int.parse(parts.frac) == 0);
-  final number = hideFrac ? grouped : '$grouped.${parts.frac}';
+  final hideFraction = parts.fraction.isEmpty || (info.hideZeroFraction && int.parse(parts.fraction) == 0);
+  final number = hideFraction ? grouped : '$grouped.${parts.fraction}';
   if (info.symbolAfter) return '$sign$number${info.symbol}';
-  final known = currencies.any((c) => c.code == currency);
-  return '$sign${known ? info.symbol : '${info.symbol} '}$number';
+  // A currency outside the table shows its code, which needs a space before the number.
+  final isKnown = currencies.any((known) => known.code == currency);
+  final prefix = isKnown ? info.symbol : '${info.symbol} ';
+  return '$sign$prefix$number';
 }
 
-/// 1234 -> "12.34" (KRW: 25000 -> "25000"): for pre-filling a text field.
+/// Minor units as plain text for pre-filling an amount field, so 1234 USD is "12.34".
 String centsToInput(int cents, {String currency = 'USD'}) {
   final parts = _split(cents.abs(), currencyInfo(currency));
   final sign = cents < 0 ? '-' : '';
-  return parts.frac.isEmpty ? '$sign${parts.whole}' : '$sign${parts.whole}.${parts.frac}';
+  if (parts.fraction.isEmpty) return '$sign${parts.whole}';
+  return '$sign${parts.whole}.${parts.fraction}';
 }
 
-/// 3333 -> "33.33": for pre-filling a percent field.
-String basisPointsToInput(int bp) =>
-    '${bp < 0 ? '-' : ''}${bp.abs() ~/ 100}.${(bp.abs() % 100).toString().padLeft(2, '0')}';
+/// Basis points as plain text for pre-filling a percent field, so 3333 is "33.33".
+String basisPointsToInput(int basisPoints) {
+  final sign = basisPoints < 0 ? '-' : '';
+  final whole = basisPoints.abs() ~/ 100;
+  final hundredths = (basisPoints.abs() % 100).toString().padLeft(2, '0');
+  return '$sign$whole.$hundredths';
+}
 
-/// 3333 -> "33.33%".
-String formatBasisPoints(int bp) => '${basisPointsToInput(bp)}%';
+/// Basis points as a percentage for display, so 3333 is "33.33%".
+String formatBasisPoints(int basisPoints) => '${basisPointsToInput(basisPoints)}%';

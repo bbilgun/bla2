@@ -1,12 +1,16 @@
+// The Material theme for light and dark mode, plus the colors used for money amounts.
 import 'package:flutter/material.dart';
 
 import 'brand.dart';
 
-/// Semantic colors for money. Owed to you vs you owe.
+/// Colors for money amounts, carried on the theme so they switch with dark mode.
 class MoneyColors extends ThemeExtension<MoneyColors> {
   const MoneyColors({required this.positive, required this.negative});
 
+  /// Money owed to you.
   final Color positive;
+
+  /// Money you owe.
   final Color negative;
 
   @override
@@ -14,16 +18,19 @@ class MoneyColors extends ThemeExtension<MoneyColors> {
       MoneyColors(positive: positive ?? this.positive, negative: negative ?? this.negative);
 
   @override
-  MoneyColors lerp(MoneyColors? other, double t) => other == null
-      ? this
-      : MoneyColors(
-          positive: Color.lerp(positive, other.positive, t)!,
-          negative: Color.lerp(negative, other.negative, t)!,
-        );
+  MoneyColors lerp(MoneyColors? other, double t) {
+    if (other == null) {
+      return this;
+    }
+    return MoneyColors(
+      positive: Color.lerp(positive, other.positive, t)!,
+      negative: Color.lerp(negative, other.negative, t)!,
+    );
+  }
 }
 
-/// Flat and bold: white cards on a soft grey ground, hairline borders instead of shadows,
-/// superellipse corners everywhere (the same shape as the logo), heavy headings.
+/// Builds the app theme: flat white cards on a soft grey ground, hairline borders instead of shadows,
+/// superellipse corners to match the logo, and heavy headings.
 ThemeData buildTheme(Brightness brightness) {
   final dark = brightness == Brightness.dark;
   final primary = dark ? Brand.emeraldBright : Brand.emerald;
@@ -50,18 +57,18 @@ ThemeData buildTheme(Brightness brightness) {
   );
 
   final base = ThemeData(colorScheme: scheme, useMaterial3: true, brightness: brightness);
-  // ThemeData.textTheme has fonts and colors but no sizes (Theme.of adds those later), so styles handed
-  // straight to the app bar, dialogs or buttons came out at 14px. Start from the Material 3 type scale.
-  final t = Typography.englishLike2021.merge(base.textTheme);
-  final text = t
+  // base.textTheme has fonts and colors but no sizes until Theme.of fills them in, and the styles below
+  // go straight to the app bar, dialogs and buttons. Merging in the Material 3 type scale gives them sizes.
+  final scale = Typography.englishLike2021.merge(base.textTheme);
+  final text = scale
       .copyWith(
-        displaySmall: t.displaySmall?.copyWith(fontWeight: FontWeight.w800, letterSpacing: -1.2),
-        headlineMedium: t.headlineMedium?.copyWith(fontWeight: FontWeight.w800, letterSpacing: -0.8),
-        headlineSmall: t.headlineSmall?.copyWith(fontWeight: FontWeight.w800, letterSpacing: -0.5),
-        titleLarge: t.titleLarge?.copyWith(fontWeight: FontWeight.w800, letterSpacing: -0.3),
-        titleMedium: t.titleMedium?.copyWith(fontWeight: FontWeight.w700),
-        titleSmall: t.titleSmall?.copyWith(fontWeight: FontWeight.w700),
-        labelLarge: t.labelLarge?.copyWith(fontWeight: FontWeight.w700),
+        displaySmall: scale.displaySmall?.copyWith(fontWeight: FontWeight.w800, letterSpacing: -1.2),
+        headlineMedium: scale.headlineMedium?.copyWith(fontWeight: FontWeight.w800, letterSpacing: -0.8),
+        headlineSmall: scale.headlineSmall?.copyWith(fontWeight: FontWeight.w800, letterSpacing: -0.5),
+        titleLarge: scale.titleLarge?.copyWith(fontWeight: FontWeight.w800, letterSpacing: -0.3),
+        titleMedium: scale.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+        titleSmall: scale.titleSmall?.copyWith(fontWeight: FontWeight.w700),
+        labelLarge: scale.labelLarge?.copyWith(fontWeight: FontWeight.w700),
       )
       .apply(bodyColor: scheme.onSurface, displayColor: scheme.onSurface);
 
@@ -178,6 +185,8 @@ ThemeData buildTheme(Brightness brightness) {
   );
 }
 
+/// Shortcut for `Theme.of(context).extension<MoneyColors>()`.
 extension MoneyColorsX on BuildContext {
+  /// The money colors of the current theme.
   MoneyColors get moneyColors => Theme.of(this).extension<MoneyColors>()!;
 }

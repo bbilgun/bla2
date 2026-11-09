@@ -1,3 +1,4 @@
+// The add expense form, which also edits an existing expense.
 import 'dart:convert';
 
 import 'package:flutter/widgets.dart';
@@ -10,9 +11,8 @@ import '../models/models.dart';
 import '../repositories/repositories.dart';
 import '../services/api_client.dart';
 
-/// The add-expense form, also used to edit one ([existing]). It collects *intent* (who paid, who's in,
-/// how to split) and sends it; the server computes every share. The getters below only drive hints
-/// like "$3.00 left to assign".
+/// Collects who paid, who's in and how to split, and sends that to the server, which works out every
+/// share. The totals here only drive hints like "$3.00 left to assign". Pass [existing] to edit.
 class AddExpenseController extends GetxController {
   AddExpenseController({
     required this.group,
@@ -22,162 +22,190 @@ class AddExpenseController extends GetxController {
     Uuid? uuid,
   }) : _uuid = uuid ?? const Uuid() {
     paidBy.value = group.isMember(myUserId) ? myUserId : group.members.first.userId;
-    included.addAll(group.members.map((m) => m.userId));
-    for (final m in group.members) {
-      exactCtrls[m.userId] = _mirrored(exactText[m.userId] = ''.obs);
-      percentCtrls[m.userId] = _mirrored(percentText[m.userId] = ''.obs);
+    included.addAll(group.members.map((member) => member.userId));
+    for (final member in group.members) {
+      final exact = ''.obs;
+      final percent = ''.obs;
+      _exactText[member.userId] = exact;
+      _percentText[member.userId] = percent;
+      exactFields[member.userId] = _mirrored(exact);
+      percentFields[member.userId] = _mirrored(percent);
     }
-    final e = existing;
-    if (e != null) _fill(e);
+    final expense = existing;
+    if (expense != null) _fill(expense);
     _savedSnapshot = _snapshot();
   }
 
+  /// The group the expense belongs to.
   final Group group;
   final ExpensesRepository _expenses;
   final Uuid _uuid;
 
-  /// The expense being edited; null when adding.
+  /// The expense being edited, or null when adding.
   final Expense? existing;
+
+  /// Whether the form edits an existing expense.
   bool get isEditing => existing != null;
 
-  // Text fields are mirrored into .obs strings so Obx can react to typing.
-  final amountText = ''.obs;
-  late final description = TextEditingController();
-  late final amount = _mirrored(amountText);
-  final exactText = <String, RxString>{};
-  final percentText = <String, RxString>{};
-  final exactCtrls = <String, TextEditingController>{};
-  final percentCtrls = <String, TextEditingController>{};
+  // Each text field writes into an RxString as the user types, so Obx can react to it.
+  final _amountText = ''.obs;
+  final _exactText = <String, RxString>{};
+  final _percentText = <String, RxString>{};
 
+  /// The description field.
+  late final description = TextEditingController();
+
+  /// The total amount field.
+  late final amount = _mirrored(_amountText);
+
+  /// Exact share fields, by member id.
+  final exactFields = <String, TextEditingController>{};
+
+  /// Percentage fields, by member id.
+  final percentFields = <String, TextEditingController>{};
+
+  /// How the expense is split.
   final splitType = SplitType.even.obs;
+
+  /// User id of whoever paid. Defaults to the signed-in user.
   final paidBy = ''.obs;
+
+  /// Members included in an even split.
   final included = <String>{}.obs;
 
+  /// True while the save request runs.
   final saving = false.obs;
+
+  /// A failure to show above the Save button.
   final error = RxnString();
+
+  /// Validation messages by field: `description`, `amount`, `paidBy` or `split`.
   final fieldErrors = <String, String>{}.obs;
 
-  /// Editing: someone else saved a newer version (EXPENSE_CHANGED) or deleted it. The page says so
-  /// and goes back, and the expense is reloaded.
+  /// Set when editing fails because someone else changed or deleted the expense. The page then says
+  /// so and goes back, and the expense is reloaded.
   bool outdated = false;
 
-  /// The Idempotency-Key for the request currently being saved.
-  /// Created on the first tap of Save, reused on every retry of the *same* request,
-  /// and thrown away only once the server confirms the save. If the person edits the form,
-  /// it's a different request, so it gets a new key. (Edits need none: they compare `version`.)
+  // The Idempotency-Key for the create request being saved, and the body it was made for. The key is
+  // reused on every retry of the same body and dropped once the server confirms. Edits don't use one,
+  // because the server checks `version` instead.
   String? _pendingKey;
   String? _pendingBody;
+
+  /// The Idempotency-Key a retry would reuse, or null when nothing is waiting.
   String? get pendingIdempotencyKey => _pendingKey;
 
+  /// The group's currency.
   String get currency => group.currency;
 
-  /// Percent splits come back from the server as amounts only, so editing one asks for the percents again.
+  /// The server only stores amounts for a percent split, so editing one asks for the percentages again.
   bool get mustReenterPercents => existing?.splitType == SplitType.percent;
 
-  void _fill(Expense e) {
-    description.text = e.description;
-    amount.text = centsToInput(e.amountCents, currency: currency);
-    if (group.isMember(e.paidBy)) paidBy.value = e.paidBy;
-    splitType.value = e.splitType;
-    switch (e.splitType) {
+  void _fill(Expense expense) {
+    description.text = expense.description;
+    amount.text = centsToInput(expense.amountCents, currency: currency);
+    if (group.isMember(expense.paidBy)) paidBy.value = expense.paidBy;
+    splitType.value = expense.splitType;
+    switch (expense.splitType) {
       case SplitType.even:
-        included.assignAll(e.splits.map((s) => s.userId).where(group.isMember));
+        included.assignAll(expense.splits.map((split) => split.userId).where(group.isMember));
       case SplitType.exact:
-        for (final s in e.splits) {
-          exactCtrls[s.userId]?.text = centsToInput(s.amountCents, currency: currency);
+        for (final split in expense.splits) {
+          exactFields[split.userId]?.text = centsToInput(split.amountCents, currency: currency);
         }
       case SplitType.percent:
-        break; // see mustReenterPercents
+        // Left empty on purpose. See mustReenterPercents.
+        break;
     }
   }
 
-  // ---- unsaved changes ----
+  // Unsaved changes
 
   late String _savedSnapshot;
 
   String _snapshot() => jsonEncode({
     'description': description.text,
-    'amount': amountText.value,
+    'amount': _amountText.value,
     'paidBy': paidBy.value,
     'split': splitType.value.wire,
-    'included': [for (final m in group.members) included.contains(m.userId)],
-    'exact': [for (final m in group.members) exactText[m.userId]!.value],
-    'percent': [for (final m in group.members) percentText[m.userId]!.value],
+    'included': [for (final member in group.members) included.contains(member.userId)],
+    'exact': [for (final member in group.members) _exactText[member.userId]!.value],
+    'percent': [for (final member in group.members) _percentText[member.userId]!.value],
   });
 
-  /// Something was typed or changed since the form opened: leaving asks first.
+  /// Whether anything changed since the form opened or last saved. Leaving then asks first.
   bool get isDirty => _snapshot() != _savedSnapshot;
 
-  // ---- plain getters over .obs (never return a fresh .obs from a getter) ----
+  // Hints
 
-  int? get amountCents => tryParseCents(amountText.value, currency: currency);
+  /// The total as typed, in minor units, or null if it isn't a valid amount.
+  int? get amountCents => tryParseCents(_amountText.value, currency: currency);
 
-  int get exactAssignedCents =>
-      group.members.fold(0, (sum, m) => sum + (tryParseCents(exactText[m.userId]!.value, currency: currency) ?? 0));
+  /// The sum of the exact shares typed so far.
+  int get exactAssignedCents {
+    var sum = 0;
+    for (final member in group.members) {
+      sum += tryParseCents(_exactText[member.userId]!.value, currency: currency) ?? 0;
+    }
+    return sum;
+  }
 
-  int get percentAssignedBp =>
-      group.members.fold(0, (sum, m) => sum + (tryParseBasisPoints(percentText[m.userId]!.value) ?? 0));
+  /// The sum of the percentages typed so far, in basis points.
+  int get percentAssignedBp {
+    var sum = 0;
+    for (final member in group.members) {
+      sum += tryParseBasisPoints(_percentText[member.userId]!.value) ?? 0;
+    }
+    return sum;
+  }
 
-  int? get exactRemainingCents => amountCents == null ? null : amountCents! - exactAssignedCents;
+  /// What's left to assign with exact shares, or null while the total isn't valid.
+  int? get exactRemainingCents {
+    final total = amountCents;
+    if (total == null) return null;
+    return total - exactAssignedCents;
+  }
 
+  /// What's left to assign with percentages, in basis points.
   int get percentRemainingBp => 10000 - percentAssignedBp;
 
-  // ---- actions ----
+  // Actions
 
-  void toggleIncluded(String userId) => included.contains(userId) ? included.remove(userId) : included.add(userId);
-
-  void splitPercentEvenly() {
-    final n = group.members.length;
-    for (final (i, m) in group.members.indexed) {
-      // Display hint only: 10000 bp / n, with the leftover on the first rows. The server re-checks the sum.
-      percentCtrls[m.userId]!.text = basisPointsToInput(10000 ~/ n + (i < 10000 % n ? 1 : 0));
+  /// Adds or removes a member from an even split.
+  void toggleIncluded(String userId) {
+    if (included.contains(userId)) {
+      included.remove(userId);
+    } else {
+      included.add(userId);
     }
   }
 
-  /// The exact JSON the API validates, or null (with [fieldErrors] set) if the form is incomplete.
+  /// Fills the percentage fields with an even split. The leftover hundredths go to the first rows.
+  void splitPercentEvenly() {
+    final count = group.members.length;
+    final base = 10000 ~/ count;
+    final leftover = 10000 % count;
+    for (final (index, member) in group.members.indexed) {
+      final share = index < leftover ? base + 1 : base;
+      percentFields[member.userId]!.text = basisPointsToInput(share);
+    }
+  }
+
+  /// Builds the JSON the API expects, or returns null and sets [fieldErrors] when the form is incomplete.
   Map<String, dynamic>? buildBody() {
     final errors = <String, String>{};
     final cents = amountCents;
     if (description.text.trim().isEmpty) errors['description'] = S.whatWasItFor;
     if (cents == null || cents <= 0) errors['amount'] = S.amountHint;
 
-    Map<String, dynamic>? split;
+    final Map<String, dynamic> split;
     switch (splitType.value) {
       case SplitType.even:
-        final ids = group.members.map((m) => m.userId).where(included.contains).toList();
-        if (ids.isEmpty) errors['split'] = S.pickSomeone;
-        split = {'type': 'EVEN', 'userIds': ids};
+        split = _evenSplit(errors);
       case SplitType.exact:
-        final shares = <Map<String, dynamic>>[];
-        for (final m in group.members) {
-          final text = exactText[m.userId]!.value.trim();
-          if (text.isEmpty) continue;
-          final v = tryParseCents(text, currency: currency);
-          if (v == null || v < 0) {
-            errors['split'] = S.checkAmountFor(m.name);
-          } else if (v > 0) {
-            shares.add({'userId': m.userId, 'amountCents': v});
-          }
-        }
-        if (shares.isEmpty) errors['split'] ??= S.enterOneShare;
-        if (cents != null && exactRemainingCents != 0) {
-          errors['split'] ??= S.sharesMustAddUpTo(formatCents(cents, currency: currency));
-        }
-        split = {'type': 'EXACT', 'shares': shares};
+        split = _exactSplit(errors, cents);
       case SplitType.percent:
-        final shares = <Map<String, dynamic>>[];
-        for (final m in group.members) {
-          final text = percentText[m.userId]!.value.trim();
-          if (text.isEmpty) continue;
-          final bp = tryParseBasisPoints(text);
-          if (bp == null || bp < 0 || bp > 10000) {
-            errors['split'] = S.checkPercentFor(m.name);
-          } else if (bp > 0) {
-            shares.add({'userId': m.userId, 'basisPoints': bp});
-          }
-        }
-        if (percentAssignedBp != 10000) errors['split'] ??= S.percentMustBe100;
-        split = {'type': 'PERCENT', 'shares': shares};
+        split = _percentSplit(errors);
     }
 
     fieldErrors.assignAll(errors);
@@ -185,7 +213,53 @@ class AddExpenseController extends GetxController {
     return {'description': description.text.trim(), 'amountCents': cents, 'paidBy': paidBy.value, 'split': split};
   }
 
-  /// Returns the saved expense, or null if it didn't save (see [error] / [fieldErrors] / [outdated]).
+  Map<String, dynamic> _evenSplit(Map<String, String> errors) {
+    final userIds = group.members.map((member) => member.userId).where(included.contains).toList();
+    if (userIds.isEmpty) errors['split'] = S.pickSomeone;
+    return {'type': 'EVEN', 'userIds': userIds};
+  }
+
+  Map<String, dynamic> _exactSplit(Map<String, String> errors, int? total) {
+    final shares = <Map<String, dynamic>>[];
+    for (final member in group.members) {
+      final text = _exactText[member.userId]!.value.trim();
+      if (text.isEmpty) continue;
+      final share = tryParseCents(text, currency: currency);
+      if (share == null || share < 0) {
+        errors['split'] = S.checkAmountFor(member.name);
+      } else if (share > 0) {
+        shares.add({'userId': member.userId, 'amountCents': share});
+      }
+    }
+    if (shares.isEmpty) errors['split'] ??= S.enterOneShare;
+    if (total != null && exactRemainingCents != 0) {
+      errors['split'] ??= S.sharesMustAddUpTo(formatCents(total, currency: currency));
+    }
+    return {'type': 'EXACT', 'shares': shares};
+  }
+
+  Map<String, dynamic> _percentSplit(Map<String, String> errors) {
+    final shares = <Map<String, dynamic>>[];
+    for (final member in group.members) {
+      final text = _percentText[member.userId]!.value.trim();
+      if (text.isEmpty) continue;
+      final basisPoints = tryParseBasisPoints(text);
+      if (basisPoints == null || basisPoints < 0 || basisPoints > 10000) {
+        errors['split'] = S.checkPercentFor(member.name);
+      } else if (basisPoints > 0) {
+        shares.add({'userId': member.userId, 'basisPoints': basisPoints});
+      }
+    }
+    if (percentAssignedBp != 10000) errors['split'] ??= S.percentMustBe100;
+    return {'type': 'PERCENT', 'shares': shares};
+  }
+
+  /// Saves the form. Returns the saved expense, or null if it didn't save, with the reason in
+  /// [error], [fieldErrors] or [outdated].
+  ///
+  /// A new expense gets an Idempotency-Key on the first tap of Save. Tapping again with the same form
+  /// reuses it, so a save whose answer was lost can't create a second expense. Changing the form
+  /// makes it a different request with a new key.
   Future<Expense?> save() async {
     if (saving.value) return null;
     error.value = null;
@@ -205,7 +279,7 @@ class AddExpenseController extends GetxController {
     try {
       final Expense saved;
       if (editing != null) {
-        // A retry of the same edit is safe: the server answers 200 if the stored content already matches.
+        // Retrying the same edit is safe, because the server accepts it if the stored content already matches.
         saved = await _expenses.update(group.id, editing.id, body, version: editing.version);
       } else {
         saved = await _expenses.create(group.id, body, idempotencyKey: _pendingKey!);
@@ -217,11 +291,12 @@ class AddExpenseController extends GetxController {
     } on GroupNotFoundException {
       rethrow;
     } on ApiException catch (e) {
-      if (editing != null && (e.code == 'EXPENSE_CHANGED' || e.code == 'EXPENSE_NOT_FOUND')) {
+      final changedElsewhere = e.code == 'EXPENSE_CHANGED' || e.code == 'EXPENSE_NOT_FOUND';
+      if (editing != null && changedElsewhere) {
         outdated = true;
         error.value = e.message;
       } else if (e.isNetwork) {
-        // The server may or may not have saved it. Retrying (same key, or same version) is safe either way.
+        // The server may or may not have saved it. Tapping Save again is safe either way.
         error.value = S.saveOffline;
       } else {
         fieldErrors.assignAll(_fieldErrorsFrom(e));
@@ -233,18 +308,13 @@ class AddExpenseController extends GetxController {
     }
   }
 
-  /// Puts server validation errors next to the field they belong to.
+  // Moves server validation errors next to the form field they belong to.
   Map<String, String> _fieldErrorsFrom(ApiException e) {
-    final out = <String, String>{};
-    for (final MapEntry(:key, :value) in e.fieldErrors.entries) {
-      final field = key.startsWith('split')
-          ? 'split'
-          : key == 'amountCents'
-          ? 'amount'
-          : key;
-      out.putIfAbsent(field, () => value);
+    final errors = <String, String>{};
+    for (final MapEntry(key: path, value: message) in e.fieldErrors.entries) {
+      errors.putIfAbsent(_formFieldFor(path), () => message);
     }
-    final byCode = switch (e.code) {
+    final fieldForCode = switch (e.code) {
       'SPLIT_SUM_MISMATCH' ||
       'SPLIT_PERCENT_MISMATCH' ||
       'SPLIT_EMPTY' ||
@@ -254,22 +324,29 @@ class AddExpenseController extends GetxController {
       'PAYER_NOT_MEMBER' => 'paidBy',
       _ => null,
     };
-    if (byCode != null) out.putIfAbsent(byCode, () => e.message);
-    return out;
+    if (fieldForCode != null) errors.putIfAbsent(fieldForCode, () => e.message);
+    return errors;
+  }
+
+  // The form field a server field path belongs to, such as "split.shares.0.userId" to "split".
+  static String _formFieldFor(String path) {
+    if (path.startsWith('split')) return 'split';
+    if (path == 'amountCents') return 'amount';
+    return path;
   }
 
   TextEditingController _mirrored(RxString target) {
-    final c = TextEditingController();
-    c.addListener(() => target.value = c.text);
-    return c;
+    final field = TextEditingController();
+    field.addListener(() => target.value = field.text);
+    return field;
   }
 
   @override
   void onClose() {
     description.dispose();
     amount.dispose();
-    for (final c in [...exactCtrls.values, ...percentCtrls.values]) {
-      c.dispose();
+    for (final field in [...exactFields.values, ...percentFields.values]) {
+      field.dispose();
     }
     super.onClose();
   }

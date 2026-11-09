@@ -1,3 +1,4 @@
+// AccountController: deleting the account and signing out.
 import 'package:flutter_test/flutter_test.dart';
 import 'package:get/get.dart';
 import 'package:netzero/app/strings.dart';
@@ -9,6 +10,7 @@ import 'package:netzero/services/cognito_backend.dart';
 
 import 'fakes.dart';
 
+/// A user repository whose delete can be made to fail once.
 class FakeUsers implements UserRepository {
   Object? failDelete;
   int deletes = 0;
@@ -36,7 +38,7 @@ void main() {
   late FakeCognito cognito;
   late AuthService auth;
   late FakeUsers users;
-  late AccountController c;
+  late AccountController controller;
 
   setUp(() async {
     Get.testMode = true;
@@ -51,10 +53,10 @@ void main() {
     );
     auth = await AuthService(cognito, clock: () => now).restore();
     users = FakeUsers();
-    c = AccountController(users, auth);
+    controller = AccountController(users, auth);
   });
 
-  test('delete blocked by balances names the groups, and keeps the session', () async {
+  test('a delete blocked by balances names the groups and keeps the session', () async {
     users.failDelete = apiError(
       'BALANCES_NOT_ZERO',
       details: [
@@ -62,27 +64,36 @@ void main() {
         {'groupId': 'g2', 'name': 'Аялал'},
       ],
     );
-    expect(await c.deleteAccount(), S.deleteAccountBlocked(['Байр', 'Аялал']));
+
+    final message = await controller.deleteAccount();
+
+    expect(message, S.deleteAccountBlocked(['Байр', 'Аялал']));
     expect(auth.isSignedIn, isTrue);
-    expect(c.deleting.value, isFalse);
+    expect(controller.deleting.value, isFalse);
   });
 
-  test('deleted: the local session is cleared', () async {
-    expect(await c.deleteAccount(), isNull);
+  test('a successful delete clears the local session', () async {
+    final message = await controller.deleteAccount();
+
+    expect(message, isNull);
     expect(users.deletes, 1);
     expect(auth.isSignedIn, isFalse);
     expect(cognito.signOutCalls, 1);
     expect(shown, [S.accountDeleted]);
   });
 
-  test('offline: says so, nothing changes', () async {
+  test('a delete while offline says so and changes nothing', () async {
     users.failDelete = networkError();
-    expect(await c.deleteAccount(), 'offline');
+
+    final message = await controller.deleteAccount();
+
+    expect(message, 'offline');
     expect(auth.isSignedIn, isTrue);
   });
 
-  test('sign out', () async {
-    await c.signOut();
+  test('sign out ends the session', () async {
+    await controller.signOut();
+
     expect(auth.isSignedIn, isFalse);
     expect(cognito.signOutCalls, 1);
   });

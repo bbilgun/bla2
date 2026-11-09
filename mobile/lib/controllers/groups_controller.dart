@@ -1,3 +1,4 @@
+// The groups tab on the home page.
 import 'dart:async';
 
 import 'package:flutter/widgets.dart';
@@ -11,19 +12,29 @@ import '../repositories/repositories.dart';
 import '../services/api_client.dart';
 import 'paging.dart';
 
-/// The groups tab: my groups, newest first, a page at a time.
-/// Refetches quietly when the app comes back to the foreground (and the page asks again when the
-/// person comes back to it from a group), so changes made elsewhere show up.
+/// The user's groups, newest first, a page at a time.
+///
+/// The list refreshes quietly when the app returns to the foreground, and the page asks for a refresh
+/// when the user comes back from a group, so changes made elsewhere show up.
 class GroupsController extends GetxController with WidgetsBindingObserver {
   GroupsController(this._groups, this._users);
 
   final GroupsRepository _groups;
   final UserRepository _users;
 
+  /// The paged list behind [groups].
   late final list = CursorList<Group>((cursor) => _groups.list(cursor: cursor));
+
+  /// The groups loaded so far.
   RxList<Group> get groups => list.items;
+
+  /// True until the first load finishes, and again while "try again" reloads.
   final loading = true.obs;
+
+  /// Why the first page couldn't load. Shown instead of the list.
   final error = RxnString();
+
+  /// The user's profile, for the account button in the app bar.
   final me = Rxn<Me>();
 
   @override
@@ -45,16 +56,17 @@ class GroupsController extends GetxController with WidgetsBindingObserver {
     if (state == AppLifecycleState.resumed) unawaited(refreshQuietly());
   }
 
+  /// Loads the profile. A failure is ignored because only the account button uses it.
   Future<void> loadMe() async {
     try {
       me.value = await _users.me();
     } on ApiException {
-      // Only the avatar uses it.
+      // The account button works without a name.
     }
   }
 
-  /// First load and pull-to-refresh. With groups already on screen a failure is a snackbar,
-  /// not an error page.
+  /// The first load and pull-to-refresh. If groups are already on screen, a failure is a snackbar
+  /// rather than an error page.
   Future<void> load() async {
     error.value = null;
     try {
@@ -70,23 +82,25 @@ class GroupsController extends GetxController with WidgetsBindingObserver {
     }
   }
 
-  /// "Try again" on the error page: show the skeleton, not a flash of the empty state.
+  /// "Try again" on the error page. It shows the loading skeleton rather than a flash of the empty state.
   Future<void> retry() {
     loading.value = true;
     return load();
   }
 
-  /// Back on the list or the app resumed: refetch without a skeleton, keep what's shown on failure.
+  /// Refetches without a skeleton, for coming back to the list or the app resuming. On failure the
+  /// list on screen stays as it is.
   Future<void> refreshQuietly() async {
     if (loading.value) return;
     try {
       await list.reload();
       error.value = null;
     } on ApiException {
-      // The list on screen stays; pull-to-refresh says what's wrong.
+      // Pull-to-refresh will say what's wrong if the user tries.
     }
   }
 
+  /// Appends the next page.
   Future<void> loadMore() async {
     try {
       await list.loadMore();
@@ -95,7 +109,7 @@ class GroupsController extends GetxController with WidgetsBindingObserver {
     }
   }
 
-  /// Returns an error message, or null on success (and opens the new group).
+  /// Creates a group and opens it. Returns null on success, or a message for the form.
   Future<String?> create(String name, String currency) async {
     try {
       final group = await _groups.create(name: name.trim(), currency: currency);
@@ -107,9 +121,10 @@ class GroupsController extends GetxController with WidgetsBindingObserver {
     }
   }
 
-  /// An invite was accepted: show the group at once, then the server's list.
+  /// Called after an invite is accepted. The group shows at once, then the list refreshes from the server.
   void joined(Group group) {
-    if (!groups.any((g) => g.id == group.id)) groups.insert(0, group);
+    final alreadyListed = groups.any((listed) => listed.id == group.id);
+    if (!alreadyListed) groups.insert(0, group);
     unawaited(refreshQuietly());
   }
 }

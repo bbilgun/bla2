@@ -1,3 +1,4 @@
+// The group page: your balance, everyone's balances, pending invites and the expense list.
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -13,13 +14,15 @@ import '../domain/money.dart';
 import '../models/models.dart';
 import 'widgets.dart';
 
+/// The choices in the app bar menu.
 enum _GroupAction { members, rename, leave, delete }
 
+/// One group: balances on top, then the expenses, newest first.
 class GroupDetailPage extends GetView<GroupDetailController> {
   const GroupDetailPage({super.key});
 
-  /// Whatever happened on the add-expense page (saved, backed out, offline), the list is refetched:
-  /// a save whose answer was lost may still have gone through.
+  // Refetches whatever happened on the add expense page, because a save whose answer was lost
+  // may still have gone through.
   Future<void> _addExpense() async {
     await Get.toNamed<Object?>(Routes.addExpensePath(controller.groupId));
     await controller.refreshAfterWrite();
@@ -49,23 +52,23 @@ class GroupDetailPage extends GetView<GroupDetailController> {
           ),
         );
       case _GroupAction.leave:
-        final ok = await confirmAction(
+        final confirmed = await confirmAction(
           context,
           title: S.leaveGroup,
           message: S.leaveGroupQuestion,
           confirmLabel: S.leaveGroup,
         );
-        if (!ok) return;
+        if (!confirmed) return;
         final message = await controller.leave();
         if (message != null && context.mounted) await showMessage(context, title: S.leaveGroup, message: message);
       case _GroupAction.delete:
-        final ok = await confirmAction(
+        final confirmed = await confirmAction(
           context,
           title: S.deleteGroup,
           message: S.deleteGroupQuestion,
           confirmLabel: S.delete,
         );
-        if (!ok) return;
+        if (!confirmed) return;
         final message = await controller.deleteGroup();
         if (message != null && context.mounted) await showMessage(context, title: S.deleteGroup, message: message);
     }
@@ -80,10 +83,10 @@ class GroupDetailPage extends GetView<GroupDetailController> {
           IconButton(
             tooltip: S.inviteByEmail,
             icon: const Icon(Icons.person_add_alt_1_outlined),
-            onPressed: () => unawaited(showInviteDialog(context, controller)),
+            onPressed: () => unawaited(_showInviteDialog(context, controller)),
           ),
           PopupMenuButton<_GroupAction>(
-            onSelected: (a) => unawaited(_onAction(context, a)),
+            onSelected: (action) => unawaited(_onAction(context, action)),
             itemBuilder: (_) => const [
               PopupMenuItem(value: _GroupAction.members, child: Text(S.members)),
               PopupMenuItem(value: _GroupAction.rename, child: Text(S.renameGroup)),
@@ -93,15 +96,14 @@ class GroupDetailPage extends GetView<GroupDetailController> {
           ),
         ],
       ),
-      floatingActionButton: Obx(
-        () => controller.group.value == null
-            ? const SizedBox.shrink()
-            : FloatingActionButton.extended(
-                onPressed: () => unawaited(_addExpense()),
-                icon: const Icon(Icons.add),
-                label: const Text(S.addExpense),
-              ),
-      ),
+      floatingActionButton: Obx(() {
+        if (controller.group.value == null) return const SizedBox.shrink();
+        return FloatingActionButton.extended(
+          onPressed: () => unawaited(_addExpense()),
+          icon: const Icon(Icons.add),
+          label: const Text(S.addExpense),
+        );
+      }),
       body: Obx(() {
         if (controller.loading.value) return const SkeletonList(header: true, count: 4);
         final error = controller.error.value;
@@ -110,12 +112,10 @@ class GroupDetailPage extends GetView<GroupDetailController> {
           return ErrorRetry(message: error ?? S.couldNotLoadGroup, onRetry: controller.retry);
         }
         final expenses = controller.expenses;
-        // After a failed page this stays false until "load more" is tapped: no retry loop.
         final autoLoad = controller.shouldAutoLoad;
         return RefreshIndicator(
           onRefresh: controller.refreshAll,
-          // Slivers: expense rows are built lazily as they scroll into view, so a group with hundreds of
-          // expenses opens as fast as one with five. The next page loads on its own near the bottom.
+          // Expense rows are built lazily as they scroll into view, so a long history opens quickly.
           child: CustomScrollView(
             physics: const AlwaysScrollableScrollPhysics(),
             slivers: [
@@ -145,11 +145,12 @@ class GroupDetailPage extends GetView<GroupDetailController> {
                 sliver: SliverList.separated(
                   itemCount: expenses.length,
                   separatorBuilder: (_, _) => const SizedBox(height: 8),
-                  itemBuilder: (_, i) {
-                    if (autoLoad && i == expenses.length - 1) {
+                  itemBuilder: (_, index) {
+                    // Building the last row fetches the next page, after this frame.
+                    if (autoLoad && index == expenses.length - 1) {
                       WidgetsBinding.instance.addPostFrameCallback((_) => unawaited(controller.loadMore()));
                     }
-                    return _ExpenseTile(expense: expenses[i], group: group, me: controller.myUserId);
+                    return _ExpenseTile(expense: expenses[index], group: group, me: controller.myUserId);
                   },
                 ),
               ),
@@ -171,8 +172,8 @@ class GroupDetailPage extends GetView<GroupDetailController> {
   }
 }
 
-/// "Invite by email": the person sees the invite once they sign in with that address.
-Future<void> showInviteDialog(BuildContext context, GroupDetailController controller) => showDialog<void>(
+// Asks for an email to invite. The invitee sees the invite once they sign in with that address.
+Future<void> _showInviteDialog(BuildContext context, GroupDetailController controller) => showDialog<void>(
   context: context,
   builder: (_) => TextPromptDialog(
     title: S.inviteByEmail,
@@ -188,7 +189,7 @@ Future<void> showInviteDialog(BuildContext context, GroupDetailController contro
   ),
 );
 
-/// Invited people who haven't joined yet, each with "cancel".
+/// Invites that haven't been accepted yet, each with a cancel button.
 class _PendingInvites extends StatelessWidget {
   const _PendingInvites({required this.controller, required this.invites});
 
@@ -216,6 +217,7 @@ class _PendingInvites extends StatelessWidget {
   }
 }
 
+/// One pending invite: the address, when it was sent, and a cancel button.
 class _InviteRow extends StatelessWidget {
   const _InviteRow({required this.controller, required this.invite});
 
@@ -227,7 +229,7 @@ class _InviteRow extends StatelessWidget {
     dense: true,
     leading: const Icon(Icons.mail_outline),
     title: Text(invite.email),
-    subtitle: Text(shortDate(invite.createdAt)),
+    subtitle: Text(S.date(invite.createdAt)),
     trailing: IconButton(
       tooltip: S.cancelInvite,
       icon: const Icon(Icons.close),
@@ -239,21 +241,22 @@ class _InviteRow extends StatelessWidget {
   );
 }
 
-/// Members (remove someone else) and pending invites (cancel), from the menu.
+/// The bottom sheet opened from the menu: members, with a remove button on everyone but the user,
+/// and pending invites.
 class _MembersSheet extends StatelessWidget {
   const _MembersSheet({required this.controller});
 
   final GroupDetailController controller;
 
-  Future<void> _remove(BuildContext context, Member m) async {
-    final ok = await confirmAction(
+  Future<void> _remove(BuildContext context, Member member) async {
+    final confirmed = await confirmAction(
       context,
       title: S.removeMember,
-      message: S.removeMemberQuestion(m.name),
+      message: S.removeMemberQuestion(member.name),
       confirmLabel: S.removeMember,
     );
-    if (!ok) return;
-    final message = await controller.removeMember(m);
+    if (!confirmed) return;
+    final message = await controller.removeMember(member);
     if (message != null && context.mounted) await showMessage(context, title: S.removeMember, message: message);
   }
 
@@ -272,19 +275,7 @@ class _MembersSheet extends StatelessWidget {
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
               child: Text(S.members, style: text.titleLarge),
             ),
-            for (final m in group.members)
-              ListTile(
-                leading: Initials(m.name, radius: 16),
-                title: Text(m.userId == controller.myUserId ? S.youSuffix(m.name) : m.name),
-                subtitle: Text(m.email),
-                trailing: m.userId == controller.myUserId
-                    ? null
-                    : IconButton(
-                        tooltip: S.removeMember,
-                        icon: const Icon(Icons.person_remove_outlined),
-                        onPressed: () => unawaited(_remove(context, m)),
-                      ),
-              ),
+            for (final member in group.members) _memberRow(context, member),
             if (group.invites.isNotEmpty) ...[
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
@@ -295,7 +286,7 @@ class _MembersSheet extends StatelessWidget {
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
               child: OutlinedButton.icon(
-                onPressed: () => unawaited(showInviteDialog(context, controller)),
+                onPressed: () => unawaited(_showInviteDialog(context, controller)),
                 icon: const Icon(Icons.person_add_alt_1_outlined),
                 label: const Text(S.inviteByEmail),
               ),
@@ -305,37 +296,58 @@ class _MembersSheet extends StatelessWidget {
       }),
     );
   }
+
+  Widget _memberRow(BuildContext context, Member member) {
+    final isMe = member.userId == controller.myUserId;
+    return ListTile(
+      leading: Initials(member.name, radius: 16),
+      title: Text(isMe ? S.youSuffix(member.name) : member.name),
+      subtitle: Text(member.email),
+      trailing: isMe
+          ? null
+          : IconButton(
+              tooltip: S.removeMember,
+              icon: const Icon(Icons.person_remove_outlined),
+              onPressed: () => unawaited(_remove(context, member)),
+            ),
+    );
+  }
 }
 
-/// The big colored card on top: green when you get money back, red when you owe, ink when square.
+/// The big colored card on top: green when the user gets money back, red when they owe, ink when square.
 class _BalanceHero extends StatelessWidget {
   const _BalanceHero({required this.controller});
 
   final GroupDetailController controller;
 
-  // Own Obx: the page's Obx doesn't track what this build() reads.
   @override
   Widget build(BuildContext context) => Obx(() => _build(context));
+
+  // Background and foreground colors for the user's balance.
+  (Color, Color) _colors(int net, {required bool dark}) {
+    final foreground = dark ? Brand.ink : Colors.white;
+    if (net > 0) return (dark ? Brand.emeraldBright : Brand.emerald, foreground);
+    if (net < 0) return (dark ? const Color(0xFFFF8A8C) : Brand.red, foreground);
+    return (dark ? const Color(0xFF1D2622) : Brand.ink, Colors.white);
+  }
+
+  String _headline(int net) {
+    if (net > 0) return S.youGetBack;
+    if (net < 0) return S.youOwe;
+    return S.yourBalance;
+  }
 
   Widget _build(BuildContext context) {
     final text = Theme.of(context).textTheme;
     final dark = Theme.of(context).brightness == Brightness.dark;
     final net = controller.myNetCents;
-    final (bg, fg) = net > 0
-        ? (dark ? Brand.emeraldBright : Brand.emerald, dark ? Brand.ink : Colors.white)
-        : net < 0
-        ? (dark ? const Color(0xFFFF8A8C) : Brand.red, dark ? Brand.ink : Colors.white)
-        : (dark ? const Color(0xFF1D2622) : Brand.ink, Colors.white);
-    final headline = net == 0
-        ? S.yourBalance
-        : net > 0
-        ? S.youGetBack
-        : S.youOwe;
+    final (background, foreground) = _colors(net, dark: dark);
+    final headline = _headline(net);
 
     return Container(
       clipBehavior: Clip.antiAlias,
       decoration: ShapeDecoration(
-        color: bg,
+        color: background,
         shape: RoundedSuperellipseBorder(borderRadius: BorderRadius.circular(28)),
       ),
       child: Stack(
@@ -346,7 +358,7 @@ class _BalanceHero extends StatelessWidget {
             top: -28,
             child: CustomPaint(
               size: const Size.square(190),
-              painter: NetZeroMarkPainter(shape: MarkShape.none, foreground: fg.withValues(alpha: 0.09)),
+              painter: NetZeroMarkPainter(shape: MarkShape.none, foreground: foreground.withValues(alpha: 0.09)),
             ),
           ),
           Padding(
@@ -354,21 +366,24 @@ class _BalanceHero extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(headline, style: text.titleSmall?.copyWith(color: fg.withValues(alpha: 0.8))),
+                Text(headline, style: text.titleSmall?.copyWith(color: foreground.withValues(alpha: 0.8))),
                 const SizedBox(height: 6),
                 Text(
                   net == 0 ? S.allSquare : formatCents(net.abs(), currency: controller.currency),
-                  style: text.displaySmall?.copyWith(color: fg, fontFeatures: const [FontFeature.tabularFigures()]),
+                  style: text.displaySmall?.copyWith(
+                    color: foreground,
+                    fontFeatures: const [FontFeature.tabularFigures()],
+                  ),
                 ),
                 const SizedBox(height: 18),
                 FilledButton(
                   style: FilledButton.styleFrom(
-                    backgroundColor: fg,
-                    foregroundColor: bg,
-                    disabledBackgroundColor: fg.withValues(alpha: 0.14),
-                    disabledForegroundColor: fg.withValues(alpha: 0.7),
+                    backgroundColor: foreground,
+                    foregroundColor: background,
+                    disabledBackgroundColor: foreground.withValues(alpha: 0.14),
+                    disabledForegroundColor: foreground.withValues(alpha: 0.7),
                   ),
-                  // Settled: still opens, for the history of recorded payments (and deleting a mistaken one).
+                  // Still opens when settled, to show recorded payments and delete a mistaken one.
                   onPressed: () => unawaited(Get.toNamed<void>(Routes.settleUpPath(controller.groupId))),
                   child: Text(controller.isSettled ? S.paymentHistory : S.settleUp),
                 ),
@@ -381,6 +396,7 @@ class _BalanceHero extends StatelessWidget {
   }
 }
 
+/// Every member's balance, with "gets back" or "owes".
 class _MemberBalances extends StatelessWidget {
   const _MemberBalances({required this.controller});
 
@@ -393,37 +409,37 @@ class _MemberBalances extends StatelessWidget {
     final text = Theme.of(context).textTheme;
     final scheme = Theme.of(context).colorScheme;
     final balances = controller.balances.value?.balances ?? const <MemberBalance>[];
-    // The server labels ex-members in English; the group's own lookup gives the Mongolian label.
-    String nameOf(MemberBalance b) => controller.group.value?.nameOf(b.userId) ?? b.name;
+    // The server labels former members in English, and the group's own lookup gives the Mongolian label.
+    String nameOf(MemberBalance balance) => controller.group.value?.nameOf(balance.userId) ?? balance.name;
     return Card(
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         child: Column(
           children: [
-            for (final (i, b) in balances.indexed) ...[
-              if (i > 0) const Divider(),
+            for (final (index, balance) in balances.indexed) ...[
+              if (index > 0) const Divider(),
               Padding(
                 padding: const EdgeInsets.symmetric(vertical: 10),
                 child: Row(
                   children: [
-                    Initials(nameOf(b), radius: 16),
+                    Initials(nameOf(balance), radius: 16),
                     const SizedBox(width: 12),
                     Expanded(
                       child: Text(
-                        b.userId == controller.myUserId ? S.youSuffix(nameOf(b)) : nameOf(b),
+                        balance.userId == controller.myUserId ? S.youSuffix(nameOf(balance)) : nameOf(balance),
                         style: text.bodyLarge?.copyWith(fontWeight: FontWeight.w600),
                       ),
                     ),
-                    if (b.netCents == 0)
+                    if (balance.netCents == 0)
                       Text(S.settled, style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant))
                     else ...[
                       MoneyText(
-                        b.netCents,
+                        balance.netCents,
                         currency: controller.currency,
                         signed: true,
                         style: text.titleSmall?.copyWith(fontWeight: FontWeight.w800),
                       ),
-                      Text(' ${b.netCents > 0 ? S.getsBack : S.owes}', style: text.bodySmall),
+                      Text(' ${balance.netCents > 0 ? S.getsBack : S.owes}', style: text.bodySmall),
                     ],
                   ],
                 ),
@@ -436,11 +452,14 @@ class _MemberBalances extends StatelessWidget {
   }
 }
 
+/// One expense: date chip, description, who paid, and what it did to the user's balance.
 class _ExpenseTile extends StatelessWidget {
   const _ExpenseTile({required this.expense, required this.group, required this.me});
 
   final Expense expense;
   final Group group;
+
+  /// The signed-in user's id.
   final String me;
 
   @override
@@ -448,9 +467,12 @@ class _ExpenseTile extends StatelessWidget {
     final text = Theme.of(context).textTheme;
     final scheme = Theme.of(context).colorScheme;
     final payer = expense.paidBy == me ? S.you : group.nameOf(expense.paidBy);
-    final myShare = expense.splits.where((s) => s.userId == me).fold(0, (a, s) => a + s.amountCents);
-    // What this expense did to *my* balance, as the server computed it: paid minus my share.
-    final effect = (expense.paidBy == me ? expense.amountCents : 0) - myShare;
+    // How this expense moved the user's balance: what they paid minus their share. Both come from the server.
+    final myShare = expense.splits
+        .where((split) => split.userId == me)
+        .fold(0, (sum, split) => sum + split.amountCents);
+    final myPayment = expense.paidBy == me ? expense.amountCents : 0;
+    final effect = myPayment - myShare;
     final colors = context.moneyColors;
 
     return Card(
@@ -461,7 +483,7 @@ class _ExpenseTile extends StatelessWidget {
           padding: const EdgeInsets.fromLTRB(12, 12, 16, 12),
           child: Row(
             children: [
-              // Calendar chip: day big, month small.
+              // Calendar chip with the day large and the month small.
               Container(
                 width: 54,
                 height: 54,

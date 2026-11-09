@@ -1,21 +1,22 @@
-/// Form checks that run before anything is sent. The server checks the same things again.
-library;
-
+// Form field validators. They return an error message, or null when the value is fine.
+// The server checks the same rules again, so these are only for quick feedback.
 import '../app/strings.dart';
 
 final _emailPattern = RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$');
 
+/// A loose shape check: something@something.something, ignoring surrounding spaces.
 bool isValidEmail(String value) => _emailPattern.hasMatch(value.trim());
 
-String? validateEmail(String? v) => v == null || !isValidEmail(v) ? S.enterValidEmail : null;
+/// Validator for email fields.
+String? validateEmail(String? value) => value == null || !isValidEmail(value) ? S.enterValidEmail : null;
 
-String? validateRequired(String? v, String message) => (v == null || v.trim().isEmpty) ? message : null;
+/// Validator that shows [message] when the field is empty or only spaces.
+String? validateRequired(String? value, String message) => (value == null || value.trim().isEmpty) ? message : null;
 
-/// The Cognito password policy (backend serverless.yml): at least 10 characters with a lowercase
-/// letter, an uppercase letter and a number. Checked here so the person sees what's missing
-/// before Cognito says no.
-String? validateNewPassword(String? v) {
-  final value = v ?? '';
+/// Validator for new passwords, matching the Cognito policy in backend/serverless.yml: at least 10
+/// characters with a lowercase letter, an uppercase letter and a digit. The message lists what's missing.
+String? validateNewPassword(String? input) {
+  final value = input ?? '';
   if (value.length < 10) return S.passwordTooShort;
   final missing = [
     if (!RegExp('[a-z]').hasMatch(value)) S.lowercaseLetter,

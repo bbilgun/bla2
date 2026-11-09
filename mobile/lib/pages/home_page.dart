@@ -1,3 +1,4 @@
+// The home page: a bottom bar switching between the groups tab and the bills tab.
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -10,7 +11,8 @@ import 'bills_page.dart';
 import 'groups_page.dart';
 import 'widgets.dart';
 
-/// Two ways to split: ongoing groups (flat, trip) and one-off bills shared by QR (restaurant, party).
+/// The two ways to split: ongoing groups for a flat or a trip, and one-off bills shared by QR for a
+/// restaurant or a party.
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
 
@@ -21,7 +23,7 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   var _tab = 0;
 
-  /// Back from a group (or anywhere): the list may have changed there (left, renamed, deleted).
+  // Coming back from a group, the list may have changed: the user may have left, renamed or deleted it.
   void _refresh() {
     if (Get.isRegistered<GroupsController>()) unawaited(Get.find<GroupsController>().refreshQuietly());
     if (Get.isRegistered<InvitesController>()) unawaited(Get.find<InvitesController>().load());
@@ -36,7 +38,7 @@ class _HomePageState extends State<HomePage> {
       ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _tab,
-        onDestinationSelected: (i) => setState(() => _tab = i),
+        onDestinationSelected: (index) => setState(() => _tab = index),
         destinations: const [
           NavigationDestination(
             icon: Icon(Icons.groups_outlined),

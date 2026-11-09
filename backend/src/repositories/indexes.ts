@@ -4,19 +4,24 @@ import type { Db, IndexDescription } from 'mongodb';
  * Every index the app relies on. Checked once per Lambda container on first connect;
  * createIndexes is a no-op when the index already exists.
  *
- *   users            { email: 1, updatedAt: -1 }    add member by email (not unique: a re-created
- *                                                 Cognito account gets a new sub, same email)
  *   groups           { 'members.userId': 1 }        "my groups", membership check
+ *   groups           { 'invites.email': 1 }         "invites for my verified email"
  *   expenses         { groupId: 1, _id: -1 }        newest-first page, balances $match
  *   settlements      { groupId: 1, _id: -1 }        same
  *   bills            { hostUserId: 1, _id: -1 }     "my bills", newest first
  *   bills            { token: 1 } unique            the guest page looks bills up by link token
  *   idempotency_keys { userId: 1, key: 1 } unique   replay protection on money writes
  *   idempotency_keys { createdAt: 1 } TTL 7 days    old keys clean themselves up
+ *
+ * Nothing looks users up by email any more, so the old users { email, updatedAt } index is no longer
+ * created. Existing databases still have it; drop it with db.users.dropIndex('email_updatedAt').
+ * Never change the key of an existing name here: createIndexes fails on a same-name, different-key index.
  */
 const INDEXES: Record<string, IndexDescription[]> = {
-  users: [{ key: { email: 1, updatedAt: -1 }, name: 'email_updatedAt' }],
-  groups: [{ key: { 'members.userId': 1 }, name: 'members_userId' }],
+  groups: [
+    { key: { 'members.userId': 1 }, name: 'members_userId' },
+    { key: { 'invites.email': 1 }, name: 'invites_email' },
+  ],
   expenses: [{ key: { groupId: 1, _id: -1 }, name: 'groupId_id' }],
   settlements: [{ key: { groupId: 1, _id: -1 }, name: 'groupId_id' }],
   bills: [

@@ -31,6 +31,23 @@ describe('the single API Lambda', () => {
     for (const r of deployedRoutes().filter((x) => x.authorizer !== null)) expect(r.authorizer).toBe('cognito');
   });
 
+  it('the tighter API Gateway throttles cover every public route and name only real routes', () => {
+    const yml = readFileSync(new URL('../../serverless.yml', import.meta.url), 'utf8');
+    const start = yml.indexOf('RouteSettings:');
+    const block = yml.slice(start, yml.indexOf('DependsOn:', start));
+    const throttled = [...block.matchAll(/'([A-Z]+ \/[^']*)':/g)].map((m) => m[1]!);
+    const publicRoutes = deployedRoutes()
+      .filter((r) => r.authorizer === null)
+      .map((r) => r.key);
+    expect(throttled.sort()).toEqual(publicRoutes.sort());
+    for (const key of throttled) expect(Object.keys(routes)).toContain(key);
+  });
+
+  it('adding members by email is gone: only invites', () => {
+    expect(Object.keys(routes)).not.toContain('POST /groups/{groupId}/members');
+    expect(Object.keys(routes)).toContain('POST /groups/{groupId}/invites/{inviteId}/accept');
+  });
+
   it('dispatches by routeKey, and an unknown routeKey is a 404', async () => {
     const health = await call(handler as never, { as: null, method: 'GET', path: '/health' });
     expect(health.status).toBe(200);

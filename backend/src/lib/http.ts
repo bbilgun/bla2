@@ -13,6 +13,8 @@ export interface Caller {
   userId: string;
   email: string;
   name: string;
+  /** Cognito has confirmed the caller owns `email`. Invites are only ever matched against a verified email. */
+  emailVerified: boolean;
 }
 
 export interface Request {
@@ -52,15 +54,23 @@ export function json(status: number, body: unknown, headers: Record<string, stri
   };
 }
 
+/**
+ * The API Gateway JWT authorizer accepts any token from our user pool for our client, and Cognito access
+ * tokens pass that check too (their `client_id` matches). Only ID tokens carry the email and name we
+ * rely on, so anything else is rejected here. API Gateway passes claims as strings ("true"), a direct
+ * invoke may pass real booleans: accept both.
+ */
 function callerFrom(event: APIGatewayProxyEventV2WithJWTAuthorizer): Caller {
   const claims = event.requestContext?.authorizer?.jwt?.claims ?? {};
   const sub = claims.sub;
-  if (typeof sub !== 'string' || sub.length === 0) {
+  if (typeof sub !== 'string' || sub.length === 0 || claims.token_use !== 'id') {
     throw new AppError(401, 'UNAUTHORIZED', 'Missing or invalid token');
   }
-  const email = typeof claims.email === 'string' ? claims.email.toLowerCase() : '';
+  const email = typeof claims.email === 'string' ? claims.email.trim().toLowerCase() : '';
   const name = typeof claims.name === 'string' && claims.name.trim() ? claims.name.trim() : email.split('@')[0] || 'Member';
-  return { userId: sub, email, name };
+  const verifiedClaim = claims.email_verified as unknown;
+  const emailVerified = email.length > 0 && (verifiedClaim === true || verifiedClaim === 'true');
+  return { userId: sub, email, name, emailVerified };
 }
 
 function decodeBody(event: APIGatewayProxyEventV2): string {

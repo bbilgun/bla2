@@ -16,10 +16,20 @@ export const CreateGroupDto = z.object({
 });
 export type CreateGroupDto = z.infer<typeof CreateGroupDto>;
 
-export const AddMemberDto = z.object({
-  email: z.email('Enter a valid email').transform((e) => e.toLowerCase()),
+export const RenameGroupDto = z.object({
+  name: z.string().trim().min(1, 'Name is required').max(80),
 });
-export type AddMemberDto = z.infer<typeof AddMemberDto>;
+export type RenameGroupDto = z.infer<typeof RenameGroupDto>;
+
+/** Invites go to an email; the invitee accepts once Cognito has verified they own it. */
+export const InviteDto = z.object({
+  email: z
+    .string()
+    .trim()
+    .pipe(z.email('Enter a valid email').max(254))
+    .transform((e) => e.toLowerCase()),
+});
+export type InviteDto = z.infer<typeof InviteDto>;
 
 export const SplitDto = z.discriminatedUnion('type', [
   z.object({ type: z.literal('EVEN'), userIds: z.array(userId).min(1).max(50) }),
@@ -44,6 +54,12 @@ export const CreateExpenseDto = z.object({
 });
 export type CreateExpenseDto = z.infer<typeof CreateExpenseDto>;
 
+/** An edit sends the whole expense again plus the version it was based on (compare-and-set). */
+export const UpdateExpenseDto = CreateExpenseDto.extend({
+  version: z.number().int().min(1),
+});
+export type UpdateExpenseDto = z.infer<typeof UpdateExpenseDto>;
+
 export const CreateSettlementDto = z
   .object({
     fromUserId: userId,
@@ -53,13 +69,16 @@ export const CreateSettlementDto = z
   .refine((s) => s.fromUserId !== s.toUserId, { message: 'Cannot settle with yourself', path: ['toUserId'] });
 export type CreateSettlementDto = z.infer<typeof CreateSettlementDto>;
 
-export const PageQueryDto = z.object({
-  limit: z.coerce.number().int().min(1).max(100).default(20),
-  cursor: z
-    .string()
-    .regex(/^[a-f0-9]{24}$/, 'Invalid cursor')
-    .optional(),
-});
+/** `?limit=&cursor=` for every newest-first list. The cursor is the last _id of the previous page. */
+export const pageQuery = (defaultLimit: number) =>
+  z.object({
+    limit: z.coerce.number().int().min(1).max(100).default(defaultLimit),
+    cursor: z
+      .string()
+      .regex(/^[a-f0-9]{24}$/, 'Invalid cursor')
+      .optional(),
+  });
+export const PageQueryDto = pageQuery(20);
 export type PageQueryDto = z.infer<typeof PageQueryDto>;
 
 export const ReceiptUploadDto = z
@@ -67,6 +86,9 @@ export const ReceiptUploadDto = z
     contentType: z.enum(['image/jpeg', 'image/png', 'image/heic']).default('image/jpeg'),
   })
   .default({ contentType: 'image/jpeg' });
+
+/** "I finished uploading this key." The server checks the prefix and that the object exists. */
+export const ConfirmUploadDto = z.object({ key: z.string().min(1).max(512) });
 
 // ---------------------------------------------------------------- bills (QR bill splitting)
 
@@ -123,11 +145,18 @@ export const JoinBillDto = z.object({
 });
 export type JoinBillDto = z.infer<typeof JoinBillDto>;
 
-/** Ticks and/or the paid flag. Ticks are the full list (not a toggle), so resending is harmless. */
+/**
+ * Ticks and/or the paid mark. Ticks are the full list (not a toggle), so resending is harmless.
+ * `paid: true` stores `paidCents` (the amount the guest saw and transferred), or their current total
+ * when it's absent; `paid: false` stores 0.
+ */
 export const GuestUpdateDto = z
   .object({
     itemIds: z.array(shortId).max(100).optional(),
     paid: z.boolean().optional(),
+    paidCents: centsAmount.optional(),
   })
-  .refine((u) => u.itemIds !== undefined || u.paid !== undefined, { message: 'Send itemIds or paid' });
+  .refine((u) => u.itemIds !== undefined || u.paid !== undefined || u.paidCents !== undefined, {
+    message: 'Send itemIds or paid',
+  });
 export type GuestUpdateDto = z.infer<typeof GuestUpdateDto>;

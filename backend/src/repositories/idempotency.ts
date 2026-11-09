@@ -32,3 +32,8 @@ export async function claimKey(input: { userId: string; key: string; requestHash
 export async function completeKey(id: ObjectId, response: { status: number; body: unknown }): Promise<void> {
   await (await idempotencyKeys()).updateOne({ _id: id }, { $set: { status: 'done', response } });
 }
+
+/** Account deletion: the user's keys would expire in 7 days anyway. */
+export async function deleteKeysForUser(userId: string): Promise<void> {
+  await (await idempotencyKeys()).deleteMany({ userId });
+}

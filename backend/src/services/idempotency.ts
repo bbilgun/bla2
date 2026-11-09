@@ -15,6 +15,14 @@ const KEY_RE = /^[A-Za-z0-9_-]{8,128}$/;
  *                                   Different body -> 422, the key was reused for something else.
  *  3. `write(resourceId)` must be insert-or-fetch on that _id, so re-running it can't double-write.
  *  4. Store the response on the key so the next retry is a pure replay.
+ *
+ * The contract for `write`: it MUST be insert-or-fetch keyed on `resourceId`, i.e. go through
+ * `insertOnce()` (repositories/collections.ts) or something equally idempotent. Step 2's "unfinished"
+ * branch runs it a second time after a crash; a plain insertOne would then write the resource twice,
+ * and an update that isn't keyed on resourceId would apply twice. Side effects that aren't safe to
+ * repeat (sending an email, charging a card) don't belong inside `write`.
+ *
+ * The request hash covers method + path + body, so the same key sent to a different route is a 422 too.
  */
 export async function idempotent(req: AuthedRequest, write: (resourceId: ObjectId) => Promise<Response>): Promise<Response> {
   const key = req.header('idempotency-key');

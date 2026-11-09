@@ -8,7 +8,7 @@ import * as settlements from '../../src/handlers/settlements';
 import { getDb } from '../../src/repositories/db';
 import { claimKey } from '../../src/repositories/idempotency';
 import { insertExpenseOnce } from '../../src/repositories/expenses';
-import { alice, bob, call, carol, useTestDb } from './helpers';
+import { addToGroup, alice, bob, call, carol, mallory, useTestDb } from './helpers';
 import { ObjectId } from 'mongodb';
 
 useTestDb();
@@ -20,9 +20,7 @@ beforeEach(async () => {
   await call(me.handler, { as: carol });
   const res = await call(groups.create, { method: 'POST', path: '/groups', body: { name: 'Flat' } });
   groupId = res.body.id;
-  for (const u of [bob, carol]) {
-    await call(groups.addMember, { method: 'POST', params: { groupId }, body: { email: u.email } });
-  }
+  for (const u of [bob, carol]) await addToGroup(groupId, u);
 });
 
 const path = () => `/groups/${groupId}/expenses`;
@@ -109,12 +107,33 @@ describe('POST /groups/{id}/expenses', () => {
 
     const outsider = await addExpense({ ...dinner, split: { type: 'EVEN', userIds: [alice.sub, 'sub-stranger'] } });
     expect(outsider.body.error.code).toBe('SPLIT_USER_NOT_MEMBER');
+    expect(outsider.body.error.details).toEqual({ userIds: ['sub-stranger'] });
+
+    const exact = await addExpense({
+      ...dinner,
+      split: { type: 'EXACT', shares: [{ userId: alice.sub, amountCents: 5000 }, { userId: mallory.sub, amountCents: 5000 }] },
+    });
+    expect(exact.status).toBe(400);
+    expect(exact.body.error.code).toBe('SPLIT_USER_NOT_MEMBER');
+
+    const percent = await addExpense({
+      ...dinner,
+      split: { type: 'PERCENT', shares: [{ userId: mallory.sub, basisPoints: 10_000 }] },
+    });
+    expect(percent.status).toBe(400);
+    expect(percent.body.error.code).toBe('SPLIT_USER_NOT_MEMBER');
+    expect(await (await getDb()).collection('expenses').countDocuments()).toBe(0);
   });
 
-  it('requires an Idempotency-Key', async () => {
+  it('requires an Idempotency-Key, and a sane one', async () => {
     const res = await addExpense(dinner, { key: null });
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe('IDEMPOTENCY_KEY_REQUIRED');
+    for (const key of ['short', 'has spaces in it', 'x'.repeat(129), 'émoji-key-123']) {
+      const bad = await addExpense(dinner, { key });
+      expect(bad.status).toBe(400);
+      expect(bad.body.error.code).toBe('IDEMPOTENCY_KEY_INVALID');
+    }
   });
 });
 
@@ -150,6 +169,21 @@ describe('idempotency', () => {
     expect(await count()).toBe(1);
   });
 
+  it('the same key on another route is a 422 too (the hash covers method and path)', async () => {
+    const key = randomUUID();
+    expect((await addExpense(dinner, { key })).status).toBe(201);
+    const res = await call(settlements.create, {
+      method: 'POST',
+      path: `/groups/${groupId}/settlements`,
+      params: { groupId },
+      body: { fromUserId: alice.sub, toUserId: bob.sub, amountCents: 100 },
+      headers: { 'Idempotency-Key': key },
+    });
+    expect(res.status).toBe(422);
+    expect(res.body.error.code).toBe('IDEMPOTENCY_KEY_REUSED');
+    expect(await (await getDb()).collection('settlements').countDocuments()).toBe(0);
+  });
+
   it('keys are per user: two users can use the same key', async () => {
     const key = randomUUID();
     await addExpense(dinner, { key });
@@ -172,6 +206,7 @@ describe('idempotency', () => {
       paidBy: alice.sub,
       splitType: 'EVEN',
       splits: [],
+      version: 1,
       createdBy: alice.sub,
       createdAt: new Date(),
     });
@@ -216,6 +251,48 @@ describe('settlements', () => {
     const res = await settle({ fromUserId: bob.sub, toUserId: carol.sub, amountCents: 100 }, alice);
     expect(res.status).toBe(403);
     expect(res.body.error.code).toBe('NOT_A_PARTY');
+  });
+
+  it('both people must be in the group', async () => {
+    const res = await settle({ fromUserId: alice.sub, toUserId: mallory.sub, amountCents: 100 });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('SETTLEMENT_USER_NOT_MEMBER');
+  });
+
+  it('delete: only a party, soft, idempotent, and gone from balances and the list', async () => {
+    await addExpense(dinner);
+    const paid = (await settle({ fromUserId: bob.sub, toUserId: alice.sub, amountCents: 3333 }, bob)).body;
+    const params = { groupId, settlementId: paid.id };
+
+    const stranger = await call(settlements.remove, { as: carol, method: 'DELETE', params });
+    expect(stranger.status).toBe(403);
+    expect(stranger.body.error.code).toBe('NOT_A_PARTY');
+
+    const deleted = await call(settlements.remove, { as: alice, method: 'DELETE', params });
+    expect(deleted.status).toBe(200);
+    expect(deleted.body).toEqual({ id: paid.id, deleted: true });
+    const again = await call(settlements.remove, { as: bob, method: 'DELETE', params });
+    expect(again.body).toEqual({ id: paid.id, deleted: true });
+
+    const { balances: rows } = await getBalances();
+    expect(rows.find((r) => r.userId === bob.sub)!.netCents).toBe(-3333);
+    expect((await call(settlements.list, { params: { groupId } })).body.items).toEqual([]);
+    expect(await (await getDb()).collection('settlements').countDocuments()).toBe(1); // kept, marked deleted
+
+    for (const settlementId of [new ObjectId().toHexString(), 'nope']) {
+      const missing = await call(settlements.remove, { method: 'DELETE', params: { groupId, settlementId } });
+      expect(missing.status).toBe(404);
+      expect(missing.body.error.code).toBe('SETTLEMENT_NOT_FOUND');
+    }
+  });
+
+  it('the list pages newest first with a cursor', async () => {
+    for (let i = 1; i <= 5; i++) await settle({ fromUserId: alice.sub, toUserId: bob.sub, amountCents: i });
+    const first = await call(settlements.list, { params: { groupId }, query: { limit: '3' } });
+    expect(first.body.items.map((s: { amountCents: number }) => s.amountCents)).toEqual([5, 4, 3]);
+    const second = await call(settlements.list, { params: { groupId }, query: { limit: '3', cursor: first.body.nextCursor } });
+    expect(second.body.items.map((s: { amountCents: number }) => s.amountCents)).toEqual([2, 1]);
+    expect(second.body.nextCursor).toBeNull();
   });
 
   it('is idempotent', async () => {
@@ -309,5 +386,151 @@ describe('GET /groups/{id}/expenses pagination', () => {
 
     expect(pages).toBe(3);
     expect(seen).toEqual(Array.from({ length: 25 }, (_, i) => `#${24 - i}`));
+  });
+
+  it('an invalid cursor is a 400, not an empty page', async () => {
+    for (const cursor of ['not-an-id', '0'.repeat(23), 'Z'.repeat(24)]) {
+      const res = await call(expenses.list, { params: { groupId }, query: { cursor } });
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('VALIDATION_ERROR');
+    }
+  });
+});
+
+describe('editing an expense (PUT, compare-and-set on version)', () => {
+  const edit = (expenseId: string, body: unknown, as = alice) =>
+    call(expenses.update, { as, method: 'PUT', params: { groupId, expenseId }, body });
+
+  it('any member edits; version goes up; the server recomputes the split', async () => {
+    const created = (await addExpense(dinner)).body;
+    expect(created).toMatchObject({ version: 1, updatedAt: null, updatedBy: null });
+
+    const res = await edit(created.id, { ...dinner, amountCents: 9_000, split: { type: 'EVEN', userIds: [bob.sub, carol.sub] }, version: 1 }, bob);
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ id: created.id, version: 2, amountCents: 9_000, updatedBy: bob.sub, createdBy: alice.sub });
+    expect(res.body.updatedAt).toEqual(expect.any(String));
+    expect(res.body.splits).toEqual([
+      { userId: bob.sub, amountCents: 4500 },
+      { userId: carol.sub, amountCents: 4500 },
+    ]);
+
+    const { balances: rows } = await getBalances();
+    expect(rows.map((r) => [r.userId, r.netCents])).toEqual([
+      [alice.sub, 9000],
+      [bob.sub, -4500],
+      [carol.sub, -4500],
+    ]);
+    const listed = (await call(expenses.list, { params: { groupId } })).body.items;
+    expect(listed).toHaveLength(1);
+    expect(listed[0].version).toBe(2);
+  });
+
+  it('a stale version is 409 EXPENSE_CHANGED; a retry of our own write is a 200', async () => {
+    const created = (await addExpense(dinner)).body;
+    const mine = { ...dinner, description: 'Dinner + tip', amountCents: 11_000, version: 1 };
+    expect((await edit(created.id, mine)).body.version).toBe(2);
+
+    // The response was lost and the app retries the same edit: identical content, 200, no new version.
+    const retry = await edit(created.id, mine);
+    expect(retry.status).toBe(200);
+    expect(retry.body.version).toBe(2);
+
+    // Bob edits from a screen loaded before Alice's change.
+    const stale = await edit(created.id, { ...dinner, description: 'Lunch', version: 1 }, bob);
+    expect(stale.status).toBe(409);
+    expect(stale.body.error.code).toBe('EXPENSE_CHANGED');
+
+    // After reloading he has version 2 and it works.
+    expect((await edit(created.id, { ...dinner, description: 'Lunch', version: 2 }, bob)).body.version).toBe(3);
+  });
+
+  it('two edits racing on the same version: exactly one wins', async () => {
+    const created = (await addExpense(dinner)).body;
+    const results = await Promise.all(
+      [1, 2, 3, 4].map((n) => edit(created.id, { ...dinner, description: `Edit ${n}`, version: 1 })),
+    );
+    expect(results.filter((r) => r.status === 200)).toHaveLength(1);
+    expect(results.filter((r) => r.status === 409).every((r) => r.body.error.code === 'EXPENSE_CHANGED')).toBe(true);
+  });
+
+  it('keeps the replaced versions server-side, capped, with who changed them', async () => {
+    const created = (await addExpense(dinner)).body;
+    for (let v = 1; v <= 25; v++) {
+      expect((await edit(created.id, { ...dinner, description: `v${v + 1}`, version: v }, v % 2 ? bob : alice)).status).toBe(200);
+    }
+    const doc = await (await getDb()).collection('expenses').findOne({ _id: new ObjectId(created.id) });
+    expect(doc!.version).toBe(26);
+    expect(doc!.history).toHaveLength(20);
+    expect(doc!.history[0]).toMatchObject({ version: 6, description: 'v6', changedBy: alice.sub });
+    expect(doc!.history[19]).toMatchObject({ version: 25, description: 'v25', changedBy: bob.sub, changedAt: expect.any(Date) });
+    // History is never sent to the app.
+    expect((await call(expenses.list, { params: { groupId } })).body.items[0].history).toBeUndefined();
+  });
+
+  it('validates like create, and 404s for a missing or deleted expense', async () => {
+    const created = (await addExpense(dinner)).body;
+    const payer = await edit(created.id, { ...dinner, paidBy: mallory.sub, version: 1 });
+    expect(payer.body.error.code).toBe('PAYER_NOT_MEMBER');
+    const split = await edit(created.id, { ...dinner, split: { type: 'EVEN', userIds: [mallory.sub] }, version: 1 });
+    expect(split.body.error.code).toBe('SPLIT_USER_NOT_MEMBER');
+    const noVersion = await edit(created.id, dinner);
+    expect(noVersion.body.error.code).toBe('VALIDATION_ERROR');
+
+    const missing = await edit(new ObjectId().toHexString(), { ...dinner, version: 1 });
+    expect(missing.status).toBe(404);
+    expect(missing.body.error.code).toBe('EXPENSE_NOT_FOUND');
+
+    await call(expenses.remove, { method: 'DELETE', params: { groupId, expenseId: created.id } });
+    const deleted = await edit(created.id, { ...dinner, version: 1 });
+    expect(deleted.status).toBe(404);
+    expect(deleted.body.error.code).toBe('EXPENSE_NOT_FOUND');
+  });
+
+  it('an expense from before versioning (no version field) is version 1', async () => {
+    const created = (await addExpense(dinner)).body;
+    await (await getDb()).collection('expenses').updateOne({ _id: new ObjectId(created.id) }, { $unset: { version: '' } });
+    expect((await call(expenses.list, { params: { groupId } })).body.items[0].version).toBe(1);
+    const res = await edit(created.id, { ...dinner, description: 'Edited', version: 1 });
+    expect(res.status).toBe(200);
+    expect(res.body.version).toBe(2);
+  });
+});
+
+describe('deleting an expense', () => {
+  it('soft-deletes: gone from the list and balances, kept in the database; deleting twice is fine', async () => {
+    const keep = (await addExpense({ ...dinner, description: 'Keep' })).body;
+    const drop = (await addExpense({ ...dinner, description: 'Drop', paidBy: bob.sub }, { as: bob })).body;
+
+    const res = await call(expenses.remove, { as: carol, method: 'DELETE', params: { groupId, expenseId: drop.id } });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ id: drop.id, deleted: true });
+    const again = await call(expenses.remove, { method: 'DELETE', params: { groupId, expenseId: drop.id } });
+    expect(again.status).toBe(200);
+    expect(again.body).toEqual({ id: drop.id, deleted: true });
+
+    const listed = (await call(expenses.list, { params: { groupId } })).body.items;
+    expect(listed.map((e: { id: string }) => e.id)).toEqual([keep.id]);
+    const { balances: rows } = await getBalances();
+    expect(rows.map((r) => [r.userId, r.netCents])).toEqual([
+      [alice.sub, 6666],
+      [bob.sub, -3333],
+      [carol.sub, -3333],
+    ]);
+    const doc = await (await getDb()).collection('expenses').findOne({ _id: new ObjectId(drop.id) });
+    expect(doc).toMatchObject({ deletedBy: carol.sub, deletedAt: expect.any(Date) });
+
+    const missing = await call(expenses.remove, { method: 'DELETE', params: { groupId, expenseId: new ObjectId().toHexString() } });
+    expect(missing.status).toBe(404);
+    expect(missing.body.error.code).toBe('EXPENSE_NOT_FOUND');
+  });
+
+  it('deleted expenses are skipped by pagination too', async () => {
+    const ids: string[] = [];
+    for (let i = 0; i < 6; i++) ids.push((await addExpense({ ...dinner, description: `#${i}` })).body.id);
+    for (const id of [ids[1], ids[4]]) await call(expenses.remove, { method: 'DELETE', params: { groupId, expenseId: id! } });
+    const first = await call(expenses.list, { params: { groupId }, query: { limit: '2' } });
+    const second = await call(expenses.list, { params: { groupId }, query: { limit: '2', cursor: first.body.nextCursor } });
+    expect([...first.body.items, ...second.body.items].map((e: { description: string }) => e.description)).toEqual(['#5', '#3', '#2', '#0']);
+    expect(second.body.nextCursor).toBeNull();
   });
 });

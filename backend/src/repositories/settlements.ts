@@ -1,19 +1,27 @@
 import type { ObjectId } from 'mongodb';
-import { isDuplicateKeyError, settlements, type SettlementDoc } from './collections';
+import { insertOnce, NOT_DELETED, pageNewestFirst, settlements, type Page, type SettlementDoc } from './collections';
 
+/** Insert-or-fetch on the idempotency key's resourceId (see services/idempotency.ts). */
 export async function insertSettlementOnce(doc: SettlementDoc): Promise<SettlementDoc> {
-  const col = await settlements();
-  try {
-    await col.insertOne(doc);
-    return doc;
-  } catch (err) {
-    if (!isDuplicateKeyError(err)) throw err;
-    const existing = await col.findOne({ _id: doc._id });
-    if (!existing) throw err;
-    return existing;
-  }
+  return insertOnce(await settlements(), doc);
 }
 
-export async function listSettlements(groupId: ObjectId, limit = 100): Promise<SettlementDoc[]> {
-  return (await settlements()).find({ groupId }).sort({ _id: -1 }).limit(limit).toArray();
+/** Live settlements only, newest first. */
+export async function listSettlements(
+  groupId: ObjectId,
+  opts: { limit: number; cursor?: ObjectId | undefined },
+): Promise<Page<SettlementDoc>> {
+  return pageNewestFirst(await settlements(), { groupId, ...NOT_DELETED }, opts);
+}
+
+/** Deleted or not: a repeated DELETE answers 200 again. */
+export async function findSettlementAnyState(groupId: ObjectId, settlementId: ObjectId): Promise<SettlementDoc | null> {
+  return (await settlements()).findOne({ _id: settlementId, groupId });
+}
+
+export async function softDeleteSettlement(groupId: ObjectId, settlementId: ObjectId, userId: string): Promise<void> {
+  await (await settlements()).updateOne(
+    { _id: settlementId, groupId, ...NOT_DELETED },
+    { $set: { deletedAt: new Date(), deletedBy: userId } },
+  );
 }

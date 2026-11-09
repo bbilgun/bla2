@@ -10,8 +10,9 @@ export async function getBalances(caller: Caller, groupId: string) {
   const rows = await computeBalances(group._id);
   const net = new Map(rows.map((r) => [r.userId, r.netCents]));
 
-  // Every member appears, even with no activity yet. Users who left keep their row if non-zero.
-  const ids = new Set([...group.members.map((m) => m.userId), ...net.keys()]);
+  // Every member appears, even with no activity yet. Former members appear only while non-zero
+  // (leaving is blocked until then, so that's only legacy data or a race).
+  const ids = new Set([...group.members.map((m) => m.userId), ...[...net].filter(([, n]) => n !== 0).map(([id]) => id)]);
   const names = new Map(group.members.map((m) => [m.userId, m.name]));
   const balances: (Balance & { name: string })[] = [...ids].sort(compareIds).map((userId) => ({
     userId,

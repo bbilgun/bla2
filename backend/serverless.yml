@@ -1,13 +1,39 @@
 # NetZero API — Serverless Framework v4
 #
 #   phone -> API Gateway (HTTP API + Cognito JWT authorizer) -> Lambda (Node 22) -> MongoDB Atlas
-#   phone -> S3 (presigned URL that Lambda signed)           -> receipts bucket
+#   phone -> S3 (presigned POST/GET that Lambda signed)       -> receipts bucket
 #
 # Deploy:  npx serverless deploy --stage dev      (see ../README.md for first-time setup)
-# Logs:    npx serverless logs -f createExpense --stage dev --tail
+# Logs:    npx serverless logs -f api --stage dev --tail
+#
+# NEVER change a UserPool property that forces CloudFormation to *replace* the pool (Schema,
+# UsernameAttributes, AliasAttributes, UserPoolName, ...): a new pool gives every user a new `sub`, and
+# every group, expense and bill is keyed on it. Only change properties AWS documents as
+# "Update requires: No interruption".
 
 org: bilguuna117
 service: netzero
+
+# Per-stage settings, read below as ${param:...}. prod keeps its data and refuses accidental deletes;
+# every other stage is disposable.
+params:
+  prod:
+    # Keep the user pool and the bucket if the stack (or the resource) is ever deleted or replaced.
+    retainPolicy: Retain
+    userPoolDeletionProtection: ACTIVE
+    # scripts/get-token.sh signs in with a plain password (USER_PASSWORD_AUTH); the app uses SRP. Off on prod.
+    allowPasswordAuth: 'false'
+    # Caps concurrent containers: x maxPoolSize 2 = at most 100 Atlas connections, and a ceiling on the bill
+    # during a flood. 0 means "don't reserve": a new account's concurrency quota can be too low to reserve any.
+    reservedConcurrency: 50
+    # Set ALARM_EMAIL when deploying to get alarm emails (confirm the subscription email AWS sends).
+    alarmEmail: ${env:ALARM_EMAIL, ''}
+  default:
+    retainPolicy: Delete
+    userPoolDeletionProtection: INACTIVE
+    allowPasswordAuth: 'true'
+    reservedConcurrency: 0
+    alarmEmail: ${env:ALARM_EMAIL, ''}
 
 provider:
   name: aws
@@ -22,11 +48,19 @@ provider:
   logRetentionInDays: 14
   environment:
     STAGE: ${sls:stage}
-    # Stored in SSM Parameter Store, never in the repo:
+    # The MongoDB URI is a SecureString in SSM Parameter Store, read once per container at cold start
+    # (src/repositories/db.ts), so it never appears in the function's configuration. Create it once:
     #   aws ssm put-parameter --name /netzero/dev/mongodb-uri --type SecureString --value 'mongodb+srv://...'
-    MONGODB_URI: ${ssm:/netzero/${sls:stage}/mongodb-uri}
+    MONGODB_URI_PARAM: /netzero/${sls:stage}/mongodb-uri
     MONGODB_DB: netzero_${sls:stage}
     RECEIPTS_BUCKET: !Ref ReceiptsBucket
+    # DELETE /me removes the caller's own Cognito user.
+    USER_POOL_ID: !Ref UserPool
+  logs:
+    # API Gateway access logs, one JSON line per request. routeKey is the route *template*
+    # ("GET /b/{token}"); the raw path is never logged because the bill link token is in it.
+    httpApi:
+      format: '{"requestId":"$context.requestId","time":"$context.requestTime","routeKey":"$context.routeKey","status":"$context.status","latencyMs":"$context.responseLatency","integrationMs":"$context.integrationLatency","integrationError":"$context.integrationErrorMessage","authorizerError":"$context.authorizer.error","bytes":"$context.responseLength","ip":"$context.identity.sourceIp","userAgent":"$context.identity.userAgent"}'
   httpApi:
     authorizers:
       cognito:
@@ -38,12 +72,28 @@ provider:
   iam:
     role:
       statements:
-        # Lambda only signs URLs; the signature is only valid for actions this role may perform.
+        # Lambda signs upload/view URLs (a signature is only valid for actions this role may perform),
+        # HEADs an upload before saving its key (GetObject covers HEAD), and deletes the object a new
+        # upload replaced (DeleteObject).
         - Effect: Allow
-          Action: [s3:PutObject, s3:GetObject]
+          Action: [s3:PutObject, s3:GetObject, s3:DeleteObject]
           Resource:
             - !Join ['', [!GetAtt ReceiptsBucket.Arn, '/groups/*']]
             - !Join ['', [!GetAtt ReceiptsBucket.Arn, '/users/*']]
+        # Without ListBucket, HEAD on a missing key answers 403 instead of 404, and "not uploaded yet"
+        # would look like a permissions error.
+        - Effect: Allow
+          Action: s3:ListBucket
+          Resource: !GetAtt ReceiptsBucket.Arn
+        # The MongoDB URI (see MONGODB_URI_PARAM). Encrypted with the AWS-managed aws/ssm key, whose key
+        # policy already allows decrypting through SSM, so no kms:Decrypt grant is needed.
+        - Effect: Allow
+          Action: ssm:GetParameter
+          Resource: !Join ['', ['arn:aws:ssm:', !Ref AWS::Region, ':', !Ref AWS::AccountId, ':parameter/netzero/${sls:stage}/mongodb-uri']]
+        # DELETE /me deletes the caller's Cognito user, and nothing else in the pool.
+        - Effect: Allow
+          Action: cognito-idp:AdminDeleteUser
+          Resource: !GetAtt UserPool.Arn
 
 build:
   esbuild:
@@ -53,50 +103,82 @@ build:
     minify: false
     sourcemap: false
     # By default v4 leaves @aws-sdk/* out of the bundle and relies on the Lambda runtime copy.
-    # An explicit (empty) exclude list bundles our pinned SDK, including s3-request-presigner.
+    # An explicit (empty) exclude list bundles our pinned SDK, including the presigners.
     exclude: []
 
 functions:
   # One function serves every route. API Gateway still routes and checks the Cognito JWT per route
   # (the events below); src/handlers/api.ts picks the handler by routeKey. One function means one
   # cold start for the whole app instead of one per route, and one MongoDB pool shared by all routes.
+  # Reserved concurrency (prod only) is set in resources.extensions.ApiLambdaFunction below.
   api:
     handler: src/handlers/api.handler
     events:
       - httpApi: { method: GET, path: /health }
       - httpApi: { method: GET, path: /me, authorizer: { name: cognito } }
+      - httpApi: { method: DELETE, path: /me, authorizer: { name: cognito } }
       - httpApi: { method: POST, path: /groups, authorizer: { name: cognito } }
       - httpApi: { method: GET, path: /groups, authorizer: { name: cognito } }
       - httpApi: { method: GET, path: '/groups/{groupId}', authorizer: { name: cognito } }
-      - httpApi: { method: POST, path: '/groups/{groupId}/members', authorizer: { name: cognito } }
+      - httpApi: { method: PATCH, path: '/groups/{groupId}', authorizer: { name: cognito } }
+      - httpApi: { method: DELETE, path: '/groups/{groupId}', authorizer: { name: cognito } }
+      - httpApi: { method: POST, path: '/groups/{groupId}/invites', authorizer: { name: cognito } }
+      - httpApi: { method: DELETE, path: '/groups/{groupId}/invites/{inviteId}', authorizer: { name: cognito } }
+      - httpApi: { method: POST, path: '/groups/{groupId}/invites/{inviteId}/accept', authorizer: { name: cognito } }
+      - httpApi: { method: POST, path: '/groups/{groupId}/invites/{inviteId}/decline', authorizer: { name: cognito } }
+      - httpApi: { method: GET, path: /invites, authorizer: { name: cognito } }
+      - httpApi: { method: POST, path: '/groups/{groupId}/leave', authorizer: { name: cognito } }
+      - httpApi: { method: DELETE, path: '/groups/{groupId}/members/{userId}', authorizer: { name: cognito } }
       - httpApi: { method: POST, path: '/groups/{groupId}/expenses', authorizer: { name: cognito } }
       - httpApi: { method: GET, path: '/groups/{groupId}/expenses', authorizer: { name: cognito } }
+      - httpApi: { method: PUT, path: '/groups/{groupId}/expenses/{expenseId}', authorizer: { name: cognito } }
+      - httpApi: { method: DELETE, path: '/groups/{groupId}/expenses/{expenseId}', authorizer: { name: cognito } }
       - httpApi: { method: POST, path: '/groups/{groupId}/settlements', authorizer: { name: cognito } }
       - httpApi: { method: GET, path: '/groups/{groupId}/settlements', authorizer: { name: cognito } }
+      - httpApi: { method: DELETE, path: '/groups/{groupId}/settlements/{settlementId}', authorizer: { name: cognito } }
       - httpApi: { method: GET, path: '/groups/{groupId}/balances', authorizer: { name: cognito } }
       - httpApi: { method: POST, path: '/groups/{groupId}/expenses/{expenseId}/receipt-url', authorizer: { name: cognito } }
       - httpApi: { method: GET, path: '/groups/{groupId}/expenses/{expenseId}/receipt-url', authorizer: { name: cognito } }
+      - httpApi: { method: PUT, path: '/groups/{groupId}/expenses/{expenseId}/receipt', authorizer: { name: cognito } }
       - httpApi: { method: POST, path: /bills, authorizer: { name: cognito } }
       - httpApi: { method: GET, path: /bills, authorizer: { name: cognito } }
       - httpApi: { method: GET, path: '/bills/{billId}', authorizer: { name: cognito } }
       - httpApi: { method: PUT, path: '/bills/{billId}', authorizer: { name: cognito } }
+      - httpApi: { method: DELETE, path: '/bills/{billId}', authorizer: { name: cognito } }
+      - httpApi: { method: POST, path: '/bills/{billId}/token', authorizer: { name: cognito } }
       - httpApi: { method: POST, path: '/bills/{billId}/status', authorizer: { name: cognito } }
       - httpApi: { method: PUT, path: '/bills/{billId}/guests/{guestId}', authorizer: { name: cognito } }
       - httpApi: { method: DELETE, path: '/bills/{billId}/guests/{guestId}', authorizer: { name: cognito } }
       - httpApi: { method: POST, path: /me/pay-qr-url, authorizer: { name: cognito } }
+      - httpApi: { method: PUT, path: /me/pay-qr, authorizer: { name: cognito } }
       - httpApi: { method: GET, path: '/b/{token}' }
       - httpApi: { method: GET, path: '/b/{token}/data' }
       - httpApi: { method: POST, path: '/b/{token}/guests' }
       - httpApi: { method: PUT, path: '/b/{token}/guests/{guestId}' }
 
 resources:
+  Conditions:
+    # The params above, as CloudFormation conditions, for the properties that must be *absent* on some stages.
+    AllowPasswordAuth: !Equals ['${param:allowPasswordAuth}', 'true']
+    HasReservedConcurrency: !Not [!Equals ['${param:reservedConcurrency}', '0']]
+    HasAlarmEmail: !Not [!Equals ['${param:alarmEmail}', '']]
+
   Resources:
     UserPool:
       Type: AWS::Cognito::UserPool
+      # Deleting the stack (or a change that would replace the pool) must never take every account with it.
+      DeletionPolicy: ${param:retainPolicy}
+      UpdateReplacePolicy: ${param:retainPolicy}
       Properties:
         UserPoolName: netzero-${sls:stage}
         UsernameAttributes: [email]
         AutoVerifiedAttributes: [email]
+        # Refuses DeleteUserPool on prod, even from the console. In-place update.
+        DeletionProtection: ${param:userPoolDeletionProtection}
+        # A changed email only takes effect once the new address is verified; until then the token keeps the
+        # old, verified one. Group invites are matched against that verified email. In-place update.
+        UserAttributeUpdateSettings:
+          AttributesRequireVerificationBeforeUpdate: [email]
         # The sign-up code email, in Mongolian like the app. {####} is where Cognito puts the code.
         VerificationMessageTemplate:
           DefaultEmailOption: CONFIRM_WITH_CODE
@@ -108,11 +190,13 @@ resources:
             Mutable: true
             Required: true
         Policies:
+          # Applies to new passwords (sign-up, reset, change); existing ones keep working. In-place update.
+          # The app's sign-up and reset forms check the same rules before sending.
           PasswordPolicy:
-            MinimumLength: 8
+            MinimumLength: 10
             RequireLowercase: true
             RequireNumbers: true
-            RequireUppercase: false
+            RequireUppercase: true
             RequireSymbols: false
         AccountRecoverySetting:
           RecoveryMechanisms:
@@ -124,10 +208,12 @@ resources:
         ClientName: netzero-mobile-${sls:stage}
         UserPoolId: !Ref UserPool
         GenerateSecret: false # public mobile client: a secret in an app binary isn't secret
-        ExplicitAuthFlows:
-          - ALLOW_USER_SRP_AUTH # what the Flutter app uses
-          - ALLOW_USER_PASSWORD_AUTH # lets scripts/get-token.sh fetch a token for curl
-          - ALLOW_REFRESH_TOKEN_AUTH
+        # The app uses SRP. Plain-password auth (scripts/get-token.sh, smoke.sh) only exists off prod.
+        # In-place update.
+        ExplicitAuthFlows: !If
+          - AllowPasswordAuth
+          - [ALLOW_USER_SRP_AUTH, ALLOW_USER_PASSWORD_AUTH, ALLOW_REFRESH_TOKEN_AUTH]
+          - [ALLOW_USER_SRP_AUTH, ALLOW_REFRESH_TOKEN_AUTH]
         PreventUserExistenceErrors: ENABLED
         IdTokenValidity: 60
         AccessTokenValidity: 60
@@ -139,6 +225,9 @@ resources:
 
     ReceiptsBucket:
       Type: AWS::S3::Bucket
+      # Receipts and QR images outlive a stack deletion on prod.
+      DeletionPolicy: ${param:retainPolicy}
+      UpdateReplacePolicy: ${param:retainPolicy}
       Properties:
         PublicAccessBlockConfiguration:
           BlockPublicAcls: true
@@ -154,6 +243,105 @@ resources:
               Status: Enabled
               AbortIncompleteMultipartUpload: { DaysAfterInitiation: 1 }
 
+    # ---- alarms: a topic, an optional email subscription (ALARM_EMAIL), and three alarms on it.
+    AlarmTopic:
+      Type: AWS::SNS::Topic
+      Properties:
+        TopicName: netzero-${sls:stage}-alarms
+
+    AlarmEmailSubscription:
+      Type: AWS::SNS::Subscription
+      Condition: HasAlarmEmail
+      Properties:
+        TopicArn: !Ref AlarmTopic
+        Protocol: email
+        Endpoint: ${param:alarmEmail}
+
+    # Every 500 the API returns: crashes the handler caught, timeouts, Lambda errors seen by API Gateway.
+    ApiServerErrorsAlarm:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmName: netzero-${sls:stage}-api-5xx
+        AlarmDescription: The API answered with 5xx. Check the api function's logs (level = "error").
+        Namespace: AWS/ApiGateway
+        MetricName: 5xx
+        Dimensions:
+          - { Name: ApiId, Value: !Ref HttpApi }
+        Statistic: Sum
+        Period: 300
+        EvaluationPeriods: 1
+        Threshold: 3
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        TreatMissingData: notBreaching
+        AlarmActions: [!Ref AlarmTopic]
+        OKActions: [!Ref AlarmTopic]
+
+    # Invocations that failed outside our error handling: init crashes (e.g. SSM unreachable), timeouts.
+    ApiLambdaErrorsAlarm:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmName: netzero-${sls:stage}-lambda-errors
+        AlarmDescription: The api Lambda failed (crash during init, timeout or out of memory).
+        Namespace: AWS/Lambda
+        MetricName: Errors
+        Dimensions:
+          - { Name: FunctionName, Value: !Ref ApiLambdaFunction }
+        Statistic: Sum
+        Period: 300
+        EvaluationPeriods: 1
+        Threshold: 1
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        TreatMissingData: notBreaching
+        AlarmActions: [!Ref AlarmTopic]
+        OKActions: [!Ref AlarmTopic]
+
+    # Requests turned away because every allowed container was busy (reserved/account concurrency).
+    ApiLambdaThrottlesAlarm:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmName: netzero-${sls:stage}-lambda-throttles
+        AlarmDescription: The api Lambda was throttled; users saw 503s. Raise reserved concurrency or find the flood.
+        Namespace: AWS/Lambda
+        MetricName: Throttles
+        Dimensions:
+          - { Name: FunctionName, Value: !Ref ApiLambdaFunction }
+        Statistic: Sum
+        Period: 300
+        EvaluationPeriods: 1
+        Threshold: 1
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        TreatMissingData: notBreaching
+        AlarmActions: [!Ref AlarmTopic]
+        OKActions: [!Ref AlarmTopic]
+
+  extensions:
+    # Throttling at API Gateway, before Lambda or Atlas pay for anything. Rates are requests/second across
+    # all callers. The public guest routes get their own, tighter limits: anyone with a link can hit them.
+    # (/data is polled every 5 s by every open guest page, so it gets the most room of the four.)
+    HttpApiStage:
+      Properties:
+        DefaultRouteSettings:
+          ThrottlingBurstLimit: 100
+          ThrottlingRateLimit: 50
+        RouteSettings:
+          'GET /health': { ThrottlingBurstLimit: 5, ThrottlingRateLimit: 2 }
+          'GET /b/{token}': { ThrottlingBurstLimit: 20, ThrottlingRateLimit: 10 }
+          'GET /b/{token}/data': { ThrottlingBurstLimit: 50, ThrottlingRateLimit: 25 }
+          'POST /b/{token}/guests': { ThrottlingBurstLimit: 10, ThrottlingRateLimit: 5 }
+          'PUT /b/{token}/guests/{guestId}': { ThrottlingBurstLimit: 30, ThrottlingRateLimit: 15 }
+      # RouteSettings may only name routes that exist, so on a fresh stack the stage waits for them.
+      # These are Serverless's generated logical ids for the routes above (HttpApiRoute + normalized key).
+      DependsOn:
+        - HttpApiRouteGetHealth
+        - HttpApiRouteGetBTokenVar
+        - HttpApiRouteGetBTokenVarData
+        - HttpApiRoutePostBTokenVarGuests
+        - HttpApiRoutePutBTokenVarGuestsGuestidVar
+    # Reserved concurrency only where params.reservedConcurrency isn't 0 (prod); absent elsewhere.
+    ApiLambdaFunction:
+      Properties:
+        ReservedConcurrentExecutions: !If [HasReservedConcurrency, '${param:reservedConcurrency}', !Ref AWS::NoValue]
+
   Outputs:
     UserPoolId:
       Value: !Ref UserPool
@@ -161,3 +349,5 @@ resources:
       Value: !Ref UserPoolClient
     ReceiptsBucketName:
       Value: !Ref ReceiptsBucket
+    AlarmTopicArn:
+      Value: !Ref AlarmTopic

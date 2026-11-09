@@ -1,4 +1,5 @@
 import { MongoClient, type Db } from 'mongodb';
+import { forgetParameter, getSecureParameter } from '../lib/ssm';
 import { ensureIndexes } from './indexes';
 
 /**
@@ -11,15 +12,22 @@ import { ensureIndexes } from './indexes';
 let dbPromise: Promise<Db> | undefined;
 let client: MongoClient | undefined;
 
-function requireEnv(name: string): string {
-  const value = process.env[name];
-  if (!value) throw new Error(`Missing environment variable ${name}`);
-  return value;
+/**
+ * MONGODB_URI wins when set (tests, scripts, a laptop). On Lambda only MONGODB_URI_PARAM is set, and
+ * the URI is read from that SSM SecureString once per container (lib/ssm caches it).
+ */
+async function mongoUri(): Promise<string> {
+  if (process.env.MONGODB_URI) return process.env.MONGODB_URI;
+  const param = process.env.MONGODB_URI_PARAM;
+  if (!param) throw new Error('Missing environment variable MONGODB_URI or MONGODB_URI_PARAM');
+  return getSecureParameter(param);
 }
 
 async function connect(): Promise<Db> {
-  client = new MongoClient(requireEnv('MONGODB_URI'), {
-    maxPoolSize: 5,
+  client = new MongoClient(await mongoUri(), {
+    // A Lambda container handles one request at a time; two sockets cover the occasional parallel
+    // query. Small pools keep (containers x pool) well under Atlas M0's 500-connection limit.
+    maxPoolSize: 2,
     serverSelectionTimeoutMS: 5_000,
     appName: 'netzero-api',
   });
@@ -30,9 +38,11 @@ async function connect(): Promise<Db> {
 }
 
 export function getDb(): Promise<Db> {
-  // If the first connect fails, forget the rejected promise so the next request retries.
+  // If the first connect fails, forget the rejected promise so the next request retries,
+  // and re-read the URI too in case it was rotated.
   dbPromise ??= connect().catch((err: unknown) => {
     dbPromise = undefined;
+    if (process.env.MONGODB_URI_PARAM) forgetParameter(process.env.MONGODB_URI_PARAM);
     throw err;
   });
   return dbPromise;

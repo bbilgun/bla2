@@ -7,6 +7,12 @@ export const groupJson = (g: GroupDoc) => ({
   name: g.name,
   currency: g.currency,
   members: g.members.map((m) => ({ userId: m.userId, email: m.email, name: m.name })),
+  invites: (g.invites ?? []).map((i) => ({
+    id: i.id,
+    email: i.email,
+    invitedBy: i.invitedBy,
+    createdAt: i.createdAt.toISOString(),
+  })),
   createdBy: g.createdBy,
   createdAt: g.createdAt.toISOString(),
 });
@@ -20,8 +26,11 @@ export const expenseJson = (e: ExpenseDoc) => ({
   splitType: e.splitType,
   splits: e.splits,
   hasReceipt: Boolean(e.receiptKey),
+  version: e.version ?? 1,
   createdBy: e.createdBy,
   createdAt: e.createdAt.toISOString(),
+  updatedAt: e.updatedAt?.toISOString() ?? null,
+  updatedBy: e.updatedBy ?? null,
 });
 
 export const settlementJson = (s: SettlementDoc) => ({

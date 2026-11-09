@@ -5,13 +5,14 @@
  *
  * The email must belong to someone who has signed in to the app at least once (GET /me creates the user row).
  * Adds two demo members and N random expenses, all split by the same domain code the API uses.
+ * (The API never looks users up by email; this dev script does, straight from the collection.)
  */
 import { ObjectId } from 'mongodb';
 import { cents } from '../src/domain/money';
 import { computeSplit, type SplitInput } from '../src/domain/split';
 import { closeDb, getDb } from '../src/repositories/db';
-import type { ExpenseDoc, GroupDoc } from '../src/repositories/collections';
-import { findUserByEmail, upsertUser } from '../src/repositories/users';
+import type { ExpenseDoc, GroupDoc, UserDoc } from '../src/repositories/collections';
+import { upsertUser } from '../src/repositories/users';
 
 const [email, countArg = '50'] = process.argv.slice(2);
 if (!email) {
@@ -22,22 +23,28 @@ if (!email) {
 const DESCRIPTIONS = ['Groceries', 'Dinner', 'Taxi', 'Coffee', 'Rent', 'Electricity', 'Movie', 'Train', 'Snacks', 'Gas'];
 
 async function main() {
-  const me = await findUserByEmail(email!);
+  const db = await getDb();
+  const me = await db.collection<UserDoc>('users').findOne({ email: email!.toLowerCase() }, { sort: { updatedAt: -1 } });
   if (!me) throw new Error(`No user ${email}. Sign in to the app once (it calls GET /me), then re-run.`);
 
   const demo = await Promise.all([
     upsertUser({ userId: 'demo-bat', email: 'bat@demo.netzero', name: 'Bat' }),
     upsertUser({ userId: 'demo-saraa', email: 'saraa@demo.netzero', name: 'Saraa' }),
   ]);
-  const members = [me, ...demo].map((u) => ({ userId: u._id, email: u.email, name: u.name, joinedAt: new Date() }));
+  const members = [me, ...demo.map((d) => d.user)].map((u) => ({
+    userId: u._id,
+    email: u.email,
+    name: u.name,
+    joinedAt: new Date(),
+  }));
   const ids = members.map((m) => m.userId);
 
-  const db = await getDb();
   const group: GroupDoc = {
     _id: new ObjectId(),
     name: `Seeded group (${new Date().toISOString().slice(0, 10)})`,
     currency: 'USD',
     members,
+    invites: [],
     createdBy: me._id,
     createdAt: new Date(),
   };
@@ -60,6 +67,7 @@ async function main() {
       paidBy,
       splitType: split.type,
       splits: computeSplit(amount, split),
+      version: 1,
       createdBy: paidBy,
       createdAt: new Date(),
     });

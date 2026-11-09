@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Creates a confirmed Cognito user with a permanent password: no email code needed.
 # Handy for test accounts and the "second person" in a demo.
-#   ./scripts/create-user.sh bat@example.com 'Passw0rd!' 'Bat' [stage]
+#   ./scripts/create-user.sh bat@example.com 'Passw0rd123' 'Bat' [stage]
+# Passwords: at least 10 characters with a lowercase letter, an uppercase letter and a digit (serverless.yml).
 set -euo pipefail
 EMAIL="$1"; PASSWORD="$2"; NAME="${3:-${1%@*}}"; STAGE="${4:-dev}"
 REGION="${AWS_REGION:-ap-northeast-1}"

@@ -4,7 +4,11 @@
  * restaurant wifi.
  *
  * Safety: every name and item comes from people typing, so the script only ever sets textContent,
- * never innerHTML. The CSP allows only this page's own nonce'd script and style.
+ * never innerHTML. The CSP allows only this page's own nonce'd script and style, and images only from
+ * the receipts bucket (the host's bank QR).
+ *
+ * Paying: "Би төлсөн" sends the total the guest is looking at as `paidCents`. If ticks change later,
+ * the server reports the difference (`dueCents`), and the page shows what's still due or overpaid.
  *
  * The script avoids template literals on purpose: this whole file is a TS template literal.
  */
@@ -123,35 +127,46 @@ button:disabled { opacity: .5; cursor: default; }
   var sending = false;
   var errorText = null;
   var qrImg = null;      // kept across renders so the image doesn't reload every poll
+  var stopped = false;   // the link stopped working: no more polling
 
   var ERRORS = {
     BILL_NOT_FOUND: 'Тооцоо олдсонгүй. Холбоосоо шалгана уу.',
+    BILL_EXPIRED: 'Энэ тооцооны холбоосын хугацаа дууссан байна.',
     BILL_CLOSED: 'Тооцоо хаагдсан тул сонголтоо өөрчлөх боломжгүй.',
     BILL_FULL: 'Энэ тооцоонд хэт олон хүн нэгдсэн байна.',
+    NAME_TAKEN: 'Энэ нэртэй хүн аль хэдийн нэгдсэн байна. Өөр нэр оруулна уу (жишээ нь: Бат Д.).',
+    GUEST_REMOVED: 'Төлөгч таныг энэ тооцооноос хассан байна.',
     GUEST_NOT_FOUND: 'Таныг энэ тооцооноос хассан байна. Дахин нэгдэнэ үү.',
     VALIDATION_ERROR: 'Оруулсан мэдээллээ шалгана уу.',
     NETWORK: 'Интернэт холболт алга. Дахин оролдоно уу.'
   };
+  // The link itself no longer works: nothing else on the page can help.
+  var FATAL = { BILL_NOT_FOUND: true, BILL_EXPIRED: true };
   function errorMessage(code) { return ERRORS[code] || 'Алдаа гарлаа. Дахин оролдоно уу.'; }
 
   // ---- money: integer cents in, text out. Same rules as the app; no float math.
   var SYMBOLS = { USD: '$', EUR: '€', GBP: '£', MNT: '₮', KRW: '₩', CNY: '¥', JPY: '¥' };
-  function splitCents(c) {
-    var abs = Math.abs(c), frac = abs % 100;
-    return { sign: c < 0 ? '-' : '', whole: String((abs - frac) / 100), frac: (frac < 10 ? '0' : '') + frac };
+  // Amounts are in the currency's smallest unit: cents for most, but 1 KRW = 1 won and 1 JPY = 1 yen
+  // (no decimals). Same table as the app (mobile/lib/domain/money.dart).
+  var ZERO_DECIMAL = { KRW: true, JPY: true };
+  function splitCents(c, currency) {
+    var abs = Math.abs(c), sign = c < 0 ? '-' : '';
+    if (ZERO_DECIMAL[currency]) return { sign: sign, whole: String(abs), frac: '' };
+    var frac = abs % 100;
+    return { sign: sign, whole: String((abs - frac) / 100), frac: (frac < 10 ? '0' : '') + frac };
   }
   function money(c, currency) {
-    var p = splitCents(c);
+    var p = splitCents(c, currency);
     var grouped = p.whole.replace(/\\B(?=(\\d{3})+(?!\\d))/g, ',');
     var sym = SYMBOLS[currency];
     // Tugrik amounts are almost always whole: "42,500₮", not "42,500.00₮". Same rule as the app.
     if (currency === 'MNT') return p.sign + grouped + (p.frac === '00' ? '' : '.' + p.frac) + '₮';
-    return p.sign + (sym || currency + ' ') + grouped + '.' + p.frac;
+    return p.sign + (sym || currency + ' ') + grouped + (p.frac ? '.' + p.frac : '');
   }
   /** For typing into a bank app: "12500" or "12500.50". */
-  function plainAmount(c) {
-    var p = splitCents(c);
-    return p.frac === '00' ? p.whole : p.whole + '.' + p.frac;
+  function plainAmount(c, currency) {
+    var p = splitCents(c, currency);
+    return p.frac === '00' || p.frac === '' ? p.whole : p.whole + '.' + p.frac;
   }
 
   // ---- tiny DOM helper: text only, never HTML
@@ -241,10 +256,12 @@ button:disabled { opacity: .5; cursor: default; }
   function refresh() {
     return api('GET', '/data').then(function (data) {
       bill = data;
-      if (me && !myGuest()) { forgetMe(); me = null; }
+      // We had joined and we're gone: the host removed us. (A join that never got through keeps its
+      // id, so retrying it can't add a second copy of us.)
+      if (me && me.joined && !myGuest()) { forgetMe(); me = null; errorText = errorMessage('GUEST_REMOVED'); }
       render();
     }, function (e) {
-      if (!bill) { renderFatal(errorMessage(e.code)); }
+      if (!bill || FATAL[e.code]) renderFatal(errorMessage(e.code));
     });
   }
 
@@ -254,9 +271,12 @@ button:disabled { opacity: .5; cursor: default; }
     errorText = null;
     render();
     return api('POST', '/guests', { name: name, guestId: me.guestId, secret: me.secret }).then(function (res) {
+      me.joined = true;
+      saveMe(me);
       bill = res.bill;
       render();
     }, function (e) {
+      if (FATAL[e.code]) { renderFatal(errorMessage(e.code)); return; }
       if (e.code !== 'NETWORK') { forgetMe(); me = null; }
       errorText = errorMessage(e.code);
       render();
@@ -295,16 +315,24 @@ button:disabled { opacity: .5; cursor: default; }
     next();
   }
 
+  /** "I paid" sends the total on screen: that's what the guest transferred, even if ticks change later. */
   function setPaid(paid) {
+    var g = myGuest();
+    if (!g) return;
+    var body = paid ? { paid: true, paidCents: g.totalCents } : { paid: false };
     sending = true;
-    api('PUT', '/guests/' + encodeURIComponent(me.guestId), { paid: paid }, { 'x-guest-secret': me.secret })
-      .then(function (data) { bill = data; errorText = null; }, function (e) { errorText = errorMessage(e.code); })
-      .then(function () { sending = false; render(); });
+    api('PUT', '/guests/' + encodeURIComponent(me.guestId), body, { 'x-guest-secret': me.secret })
+      .then(function (data) { bill = data; errorText = null; }, function (e) {
+        if (FATAL[e.code]) { renderFatal(errorMessage(e.code)); return; }
+        errorText = errorMessage(e.code);
+      })
+      .then(function () { sending = false; if (!stopped) render(); });
   }
 
   // ---- rendering
 
   function renderFatal(text) {
+    stopped = true;
     bar.hidden = true;
     app.replaceChildren(h('div', { cls: 'card center' }, h('h2', { text: 'NetZero' }), h('p', { cls: 'muted', text: text })));
   }
@@ -371,9 +399,14 @@ button:disabled { opacity: .5; cursor: default; }
       rows);
   }
 
+  /** Marked paid, then ticked more: only the difference is left to send. */
+  function stillDue(g) { return g.paidCents > 0 && g.dueCents > 0; }
+  function amountToSend(g) { return stillDue(g) ? g.dueCents : g.totalCents; }
+
   function payCard(g) {
-    var children = [h('h2', { text: 'Таны төлөх дүн' }), h('div', { cls: 'big', text: money(g.totalCents, bill.currency) })];
-    if (g.totalCents === 0) {
+    var title = stillDue(g) ? 'Үлдэгдэл төлөх' : 'Таны төлөх дүн';
+    var children = [h('h2', { text: title }), h('div', { cls: 'big', text: money(amountToSend(g), bill.currency) })];
+    if (g.totalCents === 0 && g.paidCents === 0) {
       children.push(h('p', { cls: 'muted small', text: 'Дээрээс идсэн, уусан зүйлээ сонгоход дүн гарна.' }));
       return h('div', { cls: 'card', id: 'pay' }, children);
     }
@@ -392,7 +425,7 @@ button:disabled { opacity: .5; cursor: default; }
     } else {
       children.push(h('p', { cls: 'muted small', text: bill.hostName + '-тэй төлбөрөө тохиролцоно уу.' }));
     }
-    children.push(kv('Дүн', money(g.totalCents, bill.currency), plainAmount(g.totalCents)));
+    children.push(kv('Дүн', money(amountToSend(g), bill.currency), plainAmount(amountToSend(g), bill.currency)));
     children.push(kv('Гүйлгээний утга', note, note));
     if (bill.payQrUrl) {
       if (!qrImg) qrImg = h('img', { cls: 'qr', alt: 'Төлбөрийн QR', src: bill.payQrUrl, referrerpolicy: 'no-referrer' });
@@ -401,8 +434,16 @@ button:disabled { opacity: .5; cursor: default; }
     }
     if (g.paid) {
       children.push(h('p', { cls: 'center mine', text: 'Төлсөн гэж тэмдэглэсэн ✓' }));
+      if (g.dueCents < 0) {
+        children.push(h('p', { cls: 'center small', id: 'over',
+          text: 'Та ' + money(-g.dueCents, bill.currency) + ' илүү төлсөн байна. ' + bill.hostName + '-тэй тохиролцоно уу.' }));
+      }
       children.push(h('button', { cls: 'ghost', text: 'Буцаах', disabled: sending, onclick: function () { setPaid(false); } }));
     } else {
+      if (stillDue(g)) {
+        children.push(h('p', { cls: 'center small', id: 'due',
+          text: 'Та ' + money(g.paidCents, bill.currency) + ' төлсөн. Сонголт өөрчлөгдсөн тул ' + money(g.dueCents, bill.currency) + ' дутуу байна.' }));
+      }
       children.push(h('button', { text: 'Би төлсөн', disabled: sending, onclick: function () { setPaid(true); } }));
     }
     return h('div', { cls: hero ? 'card hero' : 'card', id: 'pay' }, children);
@@ -412,7 +453,9 @@ button:disabled { opacity: .5; cursor: default; }
     var rows = bill.guests.map(function (p) {
       var label = p.name + (p.isHost ? ' (төлөгч)' : '') + (me && p.id === me.guestId ? ' (та)' : '');
       return h('div', { cls: 'person' },
-        h('span', null, label, p.paid && !p.isHost ? h('span', { cls: 'badge', text: 'Төлсөн' }) : null),
+        h('span', null, label,
+          p.paid && !p.isHost ? h('span', { cls: 'badge', text: 'Төлсөн' }) : null,
+          !p.paid && !p.isHost && p.paidCents > 0 ? h('span', { cls: 'badge', text: 'Дутуу' }) : null),
         h('span', { cls: 'num', text: money(p.totalCents, bill.currency) }));
     });
     if (bill.unclaimedCents > 0) {
@@ -422,10 +465,11 @@ button:disabled { opacity: .5; cursor: default; }
   }
 
   function renderBar(g) {
-    if (!g || g.totalCents === 0) { bar.hidden = true; return; }
+    if (!g || (g.totalCents === 0 && g.paidCents === 0)) { bar.hidden = true; return; }
     bar.hidden = false;
+    var label = g.paid ? 'Төлсөн' : stillDue(g) ? 'Үлдэгдэл' : 'Таны дүн';
     bar.replaceChildren(h('div', { cls: 'in' },
-      h('div', { cls: 'total' }, h('div', { cls: 'muted small', text: g.paid ? 'Төлсөн' : 'Таны дүн' }), h('strong', { cls: 'num', text: money(g.totalCents, bill.currency) })),
+      h('div', { cls: 'total' }, h('div', { cls: 'muted small', text: label }), h('strong', { cls: 'num', text: money(amountToSend(g), bill.currency) })),
       h('button', { text: 'Төлөх', onclick: function () { document.getElementById('pay').scrollIntoView({ behavior: 'smooth' }); } })));
   }
 
@@ -435,7 +479,7 @@ button:disabled { opacity: .5; cursor: default; }
   refresh();
   // Others tick lines too; shared lines re-split as they do. Poll while the page is visible.
   setInterval(function () {
-    if (document.hidden || sending || desired || (!myGuest() && document.activeElement && document.activeElement.id === 'name')) return;
+    if (stopped || document.hidden || sending || desired || (!myGuest() && document.activeElement && document.activeElement.id === 'name')) return;
     refresh();
   }, 5000);
 })();

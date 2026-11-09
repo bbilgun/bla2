@@ -3,7 +3,8 @@
  *
  *   MONGODB_URI='mongodb+srv://...' MONGODB_DB=netzero_dev npm run explain:balances -- <groupId>
  *
- * Look for IXSCAN on groupId_id. COLLSCAN means the index is missing.
+ * Look for IXSCAN on groupId_id. COLLSCAN means the index is missing. (Soft-deleted expenses are
+ * filtered after the index seek, so they don't change the plan.)
  */
 import { ObjectId } from 'mongodb';
 import { balancesPipeline } from '../src/aggregations/balances';

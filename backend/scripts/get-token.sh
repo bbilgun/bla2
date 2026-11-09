@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Prints a Cognito ID token for curl:
-#   export TOKEN=$(./scripts/get-token.sh you@example.com 'Passw0rd!')
+#   export TOKEN=$(./scripts/get-token.sh you@example.com 'Passw0rd123')
 #   curl -H "Authorization: Bearer $TOKEN" "$API_URL/me"
+# Uses USER_PASSWORD_AUTH, which only non-prod app clients allow (serverless.yml params).
 set -euo pipefail
 EMAIL="$1"; PASSWORD="$2"; STAGE="${3:-dev}"
 REGION="${AWS_REGION:-ap-northeast-1}"

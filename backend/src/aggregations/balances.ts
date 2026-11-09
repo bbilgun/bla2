@@ -7,7 +7,7 @@ import { expenses } from '../repositories/collections';
  *
  * Read the pipeline as array ops running inside Mongo:
  *
- *   expenses.filter(e => e.groupId === g)                                    $match
+ *   expenses.filter(e => e.groupId === g && !e.deletedAt)                    $match
  *     .flatMap(e => [{user: e.paidBy, +amount}, ...e.splits.map(-share)])     $project + $unwind
  *     .concat(settlements.filter(...).flatMap(s => [{from, +amt}, {to, -amt}]))  $unionWith
  *     .groupBy(entry => entry.userId).map(sum)                               $group
@@ -16,7 +16,8 @@ import { expenses } from '../repositories/collections';
  */
 export function balancesPipeline(groupId: ObjectId): Document[] {
   return [
-    { $match: { groupId } },
+    // Soft-deleted expenses and settlements never count. The {groupId, _id} index still drives the match.
+    { $match: { groupId, deletedAt: { $exists: false } } },
     {
       $project: {
         _id: 0,
@@ -40,7 +41,7 @@ export function balancesPipeline(groupId: ObjectId): Document[] {
       $unionWith: {
         coll: 'settlements',
         pipeline: [
-          { $match: { groupId } },
+          { $match: { groupId, deletedAt: { $exists: false } } },
           {
             // Paying someone back raises your net and lowers theirs.
             $project: {

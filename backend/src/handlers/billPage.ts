@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { requireParam, withPublicHandler } from '../lib/http';
+import { bucketOrigin } from '../lib/s3';
 import * as bills from '../services/bills';
 import { guestPageHtml } from '../web/guestPage';
 
@@ -11,6 +12,8 @@ import { guestPageHtml } from '../web/guestPage';
 /** GET /b/{token} — the web page the QR code opens */
 export const page = withPublicHandler(async () => {
   const nonce = randomBytes(16).toString('base64');
+  // The only image is the host's bank QR, a presigned GET on our own bucket: allow that host, nothing else.
+  const images = bucketOrigin() ?? "'none'";
   return {
     status: 200,
     text: guestPageHtml(nonce),
@@ -21,7 +24,7 @@ export const page = withPublicHandler(async () => {
         `script-src 'nonce-${nonce}'`,
         `style-src 'nonce-${nonce}'`,
         "connect-src 'self'",
-        'img-src https://*.amazonaws.com',
+        `img-src ${images}`,
         "base-uri 'none'",
         "form-action 'none'",
         "frame-ancestors 'none'",
@@ -40,7 +43,7 @@ export const data = withPublicHandler((req) => bills.guestGetBill(requireParam(r
 /** POST /b/{token}/guests — { name, guestId, secret } */
 export const join = withPublicHandler((req) => bills.guestJoin(req, requireParam(req, 'token')));
 
-/** PUT /b/{token}/guests/{guestId} — header x-guest-secret; { itemIds?, paid? } */
+/** PUT /b/{token}/guests/{guestId} — header x-guest-secret; { itemIds?, paid?, paidCents? } */
 export const updateGuest = withPublicHandler((req) =>
   bills.guestUpdate(req, requireParam(req, 'token'), requireParam(req, 'guestId')),
 );
